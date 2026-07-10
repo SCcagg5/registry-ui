@@ -1,0 +1,52 @@
+version: 2
+
+project_name: registry-ui
+
+builds:
+  - id: registry-ui-linux-amd64
+    main: .
+    binary: registry-ui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+  - id: registry-ui-linux-arm64
+    main: .
+    binary: registry-ui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: registry-ui-linux-amd64
+    ids:
+      - registry-ui-linux-amd64
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: registry-ui-linux-arm64
+    ids:
+      - registry-ui-linux-arm64
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: git

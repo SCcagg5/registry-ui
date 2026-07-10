@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>registry-ui</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+  <link rel="stylesheet" href="/assets/css/ui.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <div class="container">
+        <div class="head">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">R</div>
+            <div>
+              <h1 id="appTitle">registry-ui</h1>
+              <p id="registryTitle">Docker Registry</p>
+            </div>
+          </div>
+          <div class="head-actions">
+            <span id="registryStatus" class="status neutral">Vérification</span>
+            <span id="versionBadge" class="version">dev</span>
+          </div>
+        </div>
+
+        <nav id="breadcrumbs" class="breadcrumbs" aria-label="Fil d'Ariane"></nav>
+      </div>
+    </header>
+
+    <main class="container main">
+      <section class="panel toolbar" aria-label="Actions principales">
+        <div class="toolbar-left">
+          <button id="backBtn" class="btn ghost hidden" type="button">← Repositories</button>
+          <div>
+            <h2 id="viewTitle">Repositories</h2>
+            <p id="viewSubtitle">Catalogue Docker Registry</p>
+          </div>
+        </div>
+        <div class="toolbar-right">
+          <label class="search">
+            <span>Rechercher</span>
+            <input id="searchInput" type="search" autocomplete="off" placeholder="Image, namespace ou tag" />
+          </label>
+          <button id="refreshBtn" class="btn primary" type="button">Rafraîchir</button>
+        </div>
+      </section>
+
+      <section id="notice" class="notice hidden"></section>
+      <section id="content" class="panel content" aria-live="polite"></section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <noscript>
+    <main class="container main">
+      <section class="panel content empty">
+        JavaScript est nécessaire pour naviguer dans le registre.
+      </section>
+    </main>
+  </noscript>
+
+  <script src="/assets/js/api.js"></script>
+  <script src="/assets/js/app.js"></script>
+</body>
+</html>
