@@ -1,27 +1,16 @@
 window.RegistryUIApi = (() => {
   "use strict";
 
-  const manifestAccept = [
-    "application/vnd.oci.image.index.v1+json",
-    "application/vnd.oci.image.manifest.v1+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.docker.distribution.manifest.v1+json"
-  ].join(", ");
-
-  function normalizeBase(base) {
-    return String(base || "").replace(/\/+$/, "");
+  function scriptBase() {
+    const script = document.currentScript || document.querySelector('script[src$="assets/js/api.js"]');
+    if (!script) return new URL("./", window.location.href);
+    return new URL("../../", script.src);
   }
 
-  function relativePath(requestPath) {
-    const path = String(requestPath || "").replace(/^\/+/, "");
-    return path || ".";
-  }
+  const base = scriptBase();
 
-  function registryURL(config, requestPath) {
-    const base = normalizeBase(config.registryUrl);
-    if (!base) return relativePath(requestPath);
-    return `${base}/${relativePath(requestPath)}`;
+  function appURL(path) {
+    return new URL(String(path || "").replace(/^\/+/, ""), base).toString();
   }
 
   function requestOptions(options = {}) {
@@ -50,8 +39,8 @@ window.RegistryUIApi = (() => {
     return response.statusText || `HTTP ${response.status}`;
   }
 
-  async function request(config, requestPath, options = {}) {
-    const response = await fetch(registryURL(config, requestPath), requestOptions(options));
+  async function request(path, options = {}) {
+    const response = await fetch(appURL(path), requestOptions(options));
     if (!response.ok) {
       const message = await describeError(response);
       throw new Error(`${response.status} ${message}`);
@@ -59,55 +48,43 @@ window.RegistryUIApi = (() => {
     return response;
   }
 
-  async function json(config, requestPath, options = {}) {
-    const response = await request(config, requestPath, {
+  async function json(path, options = {}) {
+    const response = await request(path, {
       ...options,
       headers: { Accept: "application/json", ...(options.headers || {}) }
     });
     return { response, data: await response.json() };
   }
 
-  function repoPath(repo) {
-    return String(repo).split("/").map(encodeURIComponent).join("/");
+  function params(values) {
+    const out = new URLSearchParams();
+    Object.entries(values).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value) !== "") out.set(key, value);
+    });
+    return out.toString();
   }
 
-  function refPath(ref) {
-    return encodeURIComponent(String(ref));
+  async function config() {
+    const response = await fetch(appURL("config.json"), requestOptions({ headers: { Accept: "application/json" } }));
+    if (!response.ok) throw new Error(`config.json returned ${response.status}`);
+    return response.json();
   }
 
-  async function ping(config) {
-    return fetch(registryURL(config, "/v2/"), requestOptions({ headers: { Accept: "application/json" } }));
+  async function catalog({ pageSize, cursor } = {}) {
+    return json(`api/catalog?${params({ n: pageSize, last: cursor })}`);
   }
 
-  async function manifestMetadata(config, repo, ref) {
-    const path = `/v2/${repoPath(repo)}/manifests/${refPath(ref)}`;
-    const headers = { Accept: manifestAccept };
-    let response = await fetch(registryURL(config, path), requestOptions({ method: "HEAD", headers }));
-    if (!response.ok && (response.status === 405 || response.status === 404)) {
-      response = await fetch(registryURL(config, path), requestOptions({ method: "GET", headers }));
-    }
-    if (!response.ok) {
-      const message = await describeError(response);
-      throw new Error(`${response.status} ${message}`);
-    }
-    return {
-      digest: response.headers.get("Docker-Content-Digest") || "",
-      mediaType: response.headers.get("Content-Type") || "",
-      contentLength: response.headers.get("Content-Length") || ""
-    };
+  async function tags({ repo, pageSize, cursor } = {}) {
+    return json(`api/tags?${params({ repo, n: pageSize, last: cursor })}`);
   }
 
-  function nextCursor(linkHeader) {
-    if (!linkHeader) return "";
-    const match = String(linkHeader).match(/<([^>]+)>\s*;\s*rel="?next"?/i);
-    if (!match) return "";
-    try {
-      const url = new URL(match[1], window.location.origin);
-      return url.searchParams.get("last") || "";
-    } catch (_) {
-      return "";
-    }
+  async function deleteTag({ repo, tag } = {}) {
+    return json(`api/delete?${params({ repo, tag })}`, { method: "DELETE" });
   }
 
-  return { json, request, ping, manifestMetadata, nextCursor, repoPath, refPath };
+  function downloadURL(repo, tag) {
+    return appURL(`api/download?${params({ repo, tag })}`);
+  }
+
+  return { appURL, config, catalog, tags, deleteTag, downloadURL };
 })();

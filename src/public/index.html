@@ -1,49 +1,47 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>registry-ui</title>
+  <title>Registry UI</title>
   <link rel="stylesheet" href="assets/css/style.css" />
   <link rel="stylesheet" href="assets/css/ui.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
-      <div class="container">
-        <div class="head">
-          <div class="brand">
-            <div class="brand-mark" aria-hidden="true">R</div>
-            <div>
-              <h1 id="appTitle">registry-ui</h1>
-              <p id="registryTitle">Docker Registry</p>
-            </div>
-          </div>
-          <div class="head-actions">
-            <span id="registryStatus" class="status neutral">Vérification</span>
-            <span id="versionBadge" class="version">dev</span>
-          </div>
+      <div class="container head">
+        <div>
+          <h1>Registry UI</h1>
+          <p>Docker Registry browser</p>
         </div>
-
-        <nav id="breadcrumbs" class="breadcrumbs" aria-label="Fil d'Ariane"></nav>
+        <span id="versionBadge" class="version">dev</span>
       </div>
     </header>
 
     <main class="container main">
-      <section class="panel toolbar" aria-label="Actions principales">
-        <div class="toolbar-left">
-          <button id="backBtn" class="btn ghost hidden" type="button">← Repositories</button>
-          <div>
+      <section class="panel toolbar" aria-label="Main actions">
+        <div class="toolbar-title">
+          <button id="backBtn" class="btn ghost hidden" type="button">← Back</button>
+          <div class="title-block">
             <h2 id="viewTitle">Repositories</h2>
-            <p id="viewSubtitle">Catalogue Docker Registry</p>
+            <p id="viewSubtitle">Docker Registry catalog</p>
           </div>
         </div>
-        <div class="toolbar-right">
-          <label class="search">
-            <span>Rechercher</span>
-            <input id="searchInput" type="search" autocomplete="off" placeholder="Image, namespace ou tag" />
+        <div class="toolbar-actions">
+          <label class="field">
+            <span>Search</span>
+            <input id="searchInput" type="search" autocomplete="off" placeholder="Image or namespace" />
           </label>
-          <button id="refreshBtn" class="btn primary" type="button">Rafraîchir</button>
+          <label class="field compact">
+            <span>Page size</span>
+            <select id="pageSizeSelect" autocomplete="off">
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button id="refreshBtn" class="btn primary" type="button">Refresh</button>
         </div>
       </section>
 
@@ -57,7 +55,7 @@
   <noscript>
     <main class="container main">
       <section class="panel content empty">
-        JavaScript est nécessaire pour naviguer dans le registre.
+        JavaScript is required to browse this registry.
       </section>
     </main>
   </noscript>

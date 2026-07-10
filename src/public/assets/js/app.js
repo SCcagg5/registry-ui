@@ -4,6 +4,8 @@
   const api = window.RegistryUIApi;
   const $ = (selector) => document.querySelector(selector);
 
+  const PAGE_SIZES = [25, 50, 100];
+
   const state = {
     config: null,
     view: "repositories",
@@ -13,10 +15,9 @@
     catalogCursor: "",
     tagsCursor: "",
     filter: "",
+    pageSize: Number(localStorage.getItem("registry-ui-page-size") || 25),
     loading: false,
-    error: "",
-    tagDetails: {},
-    detailLoading: {}
+    error: ""
   };
 
   const els = {};
@@ -25,23 +26,20 @@
 
   async function init() {
     cacheElements();
+    normalizePageSize();
     bindEvents();
     await loadConfig();
     window.addEventListener("hashchange", navigate);
     await navigate();
-    checkRegistry();
   }
 
   function cacheElements() {
-    els.appTitle = $("#appTitle");
-    els.registryTitle = $("#registryTitle");
     els.versionBadge = $("#versionBadge");
-    els.registryStatus = $("#registryStatus");
-    els.breadcrumbs = $("#breadcrumbs");
     els.backBtn = $("#backBtn");
     els.viewTitle = $("#viewTitle");
     els.viewSubtitle = $("#viewSubtitle");
     els.searchInput = $("#searchInput");
+    els.pageSizeSelect = $("#pageSizeSelect");
     els.refreshBtn = $("#refreshBtn");
     els.notice = $("#notice");
     els.content = $("#content");
@@ -55,25 +53,29 @@
       state.filter = els.searchInput.value.trim().toLowerCase();
       renderContent();
     });
+    els.pageSizeSelect.addEventListener("change", () => {
+      state.pageSize = Number(els.pageSizeSelect.value || 25);
+      normalizePageSize();
+      localStorage.setItem("registry-ui-page-size", String(state.pageSize));
+      reloadCurrent();
+    });
     document.addEventListener("click", onDocumentClick);
+  }
+
+  function normalizePageSize() {
+    if (!PAGE_SIZES.includes(state.pageSize)) state.pageSize = 25;
+    if (els.pageSizeSelect) els.pageSizeSelect.value = String(state.pageSize);
   }
 
   async function loadConfig() {
     try {
-      const response = await fetch("config.json", { cache: "no-store" });
-      state.config = await response.json();
+      state.config = await api.config();
     } catch (_) {
       state.config = {
         name: "registry-ui",
         version: "dev",
-        title: "Registry UI",
-        registryTitle: "Docker Registry",
-        registryUrl: "",
-        pullUrl: "",
         proxyEnabled: true,
-        deleteEnabled: false,
-        catalogPageSize: 100,
-        tagsPageSize: 100
+        deleteEnabled: false
       };
     }
   }
@@ -88,11 +90,8 @@
     renderChrome();
     renderNotice();
 
-    if (state.view === "tags") {
-      await loadTags(false);
-    } else {
-      await loadCatalog(false);
-    }
+    if (state.view === "tags") await loadTags(false);
+    else await loadCatalog(false);
   }
 
   function parseRoute() {
@@ -107,51 +106,26 @@
   function setRouteRepository(repo) { window.location.hash = `#/repository/${encodeURIComponent(repo)}`; }
 
   function renderChrome() {
-    const cfg = state.config;
-    document.title = `${cfg.title || "Registry UI"} · ${cfg.registryTitle || "Docker Registry"}`;
-    els.appTitle.textContent = cfg.title || "Registry UI";
-    els.registryTitle.textContent = cfg.registryTitle || "Docker Registry";
-    els.versionBadge.textContent = cfg.version || "dev";
-
+    const cfg = state.config || {};
     const isRepo = state.view === "tags";
+    document.title = isRepo ? `${state.repo} · Registry UI` : "Registry UI";
+    els.versionBadge.textContent = cfg.version || "dev";
     els.backBtn.classList.toggle("hidden", !isRepo);
     els.viewTitle.textContent = isRepo ? state.repo : "Repositories";
-    els.viewSubtitle.textContent = isRepo ? "Tags disponibles pour cette image" : "Catalogue Docker Registry";
-    els.searchInput.placeholder = isRepo ? "Filtrer les tags" : "Image ou namespace";
-
-    const crumbs = [`<button type="button" data-action="route-home">/</button>`, `<span>repositories</span>`];
-    if (isRepo) crumbs.push(`<span>/</span><span title="${escapeAttr(state.repo)}">${escapeHtml(state.repo)}</span>`);
-    els.breadcrumbs.innerHTML = crumbs.join("");
+    els.viewSubtitle.textContent = isRepo ? "Available image tags" : "Docker Registry catalog";
+    els.searchInput.placeholder = isRepo ? "Filter tags" : "Image or namespace";
   }
 
   function renderNotice() {
-    const cfg = state.config;
-    const needsConfig = !cfg.registryUrl && !cfg.proxyEnabled;
+    const cfg = state.config || {};
+    const needsConfig = !cfg.proxyEnabled;
     els.notice.className = needsConfig ? "notice warn" : "notice hidden";
     els.notice.textContent = needsConfig
-      ? "Aucun proxy registry n'est configuré. Définis REGISTRY_PROXY_PASS_URL ou REGISTRY_URL."
+      ? "No registry proxy is configured. Set REGISTRY_PROXY_PASS_URL or REGISTRY_URL."
       : "";
   }
 
-  async function checkRegistry() {
-    setStatus("neutral", "Vérification");
-    try {
-      const response = await api.ping(state.config);
-      if (response.ok) setStatus("ok", "Connecté");
-      else if (response.status === 401) setStatus("warn", "Auth requise");
-      else setStatus("danger", `Erreur ${response.status}`);
-    } catch (_) {
-      setStatus("danger", "Injoignable");
-    }
-  }
-
-  function setStatus(tone, label) {
-    els.registryStatus.className = `status ${tone}`;
-    els.registryStatus.textContent = label;
-  }
-
   async function reloadCurrent() {
-    checkRegistry();
     if (state.view === "tags") await loadTags(false);
     else await loadCatalog(false);
   }
@@ -162,12 +136,11 @@
     renderContent();
     try {
       const cursor = append ? state.catalogCursor : "";
-      const limit = Number(state.config.catalogPageSize || 100);
-      const path = `/v2/_catalog?n=${encodeURIComponent(limit)}${cursor ? `&last=${encodeURIComponent(cursor)}` : ""}`;
-      const { response, data } = await api.json(state.config, path);
+      const { data } = await api.catalog({ pageSize: state.pageSize, cursor });
       const incoming = Array.isArray(data.repositories) ? data.repositories : [];
-      state.repositories = append ? unique([...state.repositories, ...incoming]) : incoming;
-      state.catalogCursor = api.nextCursor(response.headers.get("Link"));
+      state.repositories = append ? uniqueByName([...state.repositories, ...incoming]) : incoming;
+      state.catalogCursor = data.next || "";
+      if (typeof data.deleteEnabled === "boolean") state.config.deleteEnabled = data.deleteEnabled;
     } catch (error) {
       state.error = error.message || String(error);
       if (!append) state.repositories = [];
@@ -184,16 +157,11 @@
     renderContent();
     try {
       const cursor = append ? state.tagsCursor : "";
-      const limit = Number(state.config.tagsPageSize || 100);
-      const path = `/v2/${api.repoPath(state.repo)}/tags/list?n=${encodeURIComponent(limit)}${cursor ? `&last=${encodeURIComponent(cursor)}` : ""}`;
-      const { response, data } = await api.json(state.config, path);
-      const incoming = Array.isArray(data.tags) ? data.tags.filter(Boolean) : [];
-      state.tags = append ? unique([...state.tags, ...incoming]) : incoming;
-      state.tagsCursor = api.nextCursor(response.headers.get("Link"));
-      if (!append) {
-        state.tagDetails = {};
-        state.detailLoading = {};
-      }
+      const { data } = await api.tags({ repo: state.repo, pageSize: state.pageSize, cursor });
+      const incoming = Array.isArray(data.tags) ? data.tags : [];
+      state.tags = append ? uniqueByName([...state.tags, ...incoming]) : incoming;
+      state.tagsCursor = data.next || "";
+      if (typeof data.deleteEnabled === "boolean") state.config.deleteEnabled = data.deleteEnabled;
     } catch (error) {
       state.error = error.message || String(error);
       if (!append) state.tags = [];
@@ -206,12 +174,12 @@
 
   function renderContent() {
     if (state.loading && currentItems().length === 0) {
-      els.content.innerHTML = `<div class="loading"><div><div class="skeleton"></div><h3>Chargement</h3><p>Lecture du registre en cours.</p></div></div>`;
+      els.content.innerHTML = `<div class="loading"><div><div class="skeleton"></div><h3>Loading</h3><p>Reading registry metadata.</p></div></div>`;
       return;
     }
 
     if (state.error) {
-      els.content.innerHTML = `<div class="error"><div><h3>Impossible de lire le registre</h3><p>${escapeHtml(state.error)}</p></div></div>`;
+      els.content.innerHTML = `<div class="error"><div><h3>Unable to read the registry</h3><p>${escapeHtml(state.error)}</p></div></div>`;
       return;
     }
 
@@ -220,13 +188,24 @@
   }
 
   function currentItems() { return state.view === "tags" ? state.tags : state.repositories; }
-  function filteredRepositories() { return state.filter ? state.repositories.filter((repo) => repo.toLowerCase().includes(state.filter)) : state.repositories; }
-  function filteredTags() { return state.filter ? state.tags.filter((tag) => tag.toLowerCase().includes(state.filter)) : state.tags; }
+  function filteredRepositories() {
+    return state.filter
+      ? state.repositories.filter((repo) => repo.name.toLowerCase().includes(state.filter))
+      : state.repositories;
+  }
+  function filteredTags() {
+    return state.filter
+      ? state.tags.filter((tag) => tag.name.toLowerCase().includes(state.filter))
+      : state.tags;
+  }
 
   function renderRepositories() {
     const repos = filteredRepositories();
     if (repos.length === 0) {
-      els.content.innerHTML = emptyState("Aucune image", state.filter ? "Aucun repository ne correspond à la recherche." : "Le catalogue est vide ou le registre ne renvoie aucun repository.");
+      els.content.innerHTML = emptyState(
+        "No repositories",
+        state.filter ? "No repository matches the current search." : "The catalog is empty or the registry did not return any repository."
+      );
       return;
     }
 
@@ -236,37 +215,33 @@
           <thead>
             <tr>
               <th>Repository</th>
-              <th>Commande</th>
-              <th class="is-right">Actions</th>
+              <th>Tags</th>
+              <th>Latest version</th>
+              <th>Last updated</th>
             </tr>
           </thead>
           <tbody>${repos.map(renderRepositoryRow).join("")}</tbody>
         </table>
       </div>
-      ${footer(`${repos.length} repository${repos.length > 1 ? "s" : ""}`, state.catalogCursor, "catalog-more")}
+      ${footer(`${repos.length} repositor${repos.length > 1 ? "ies" : "y"}`, state.catalogCursor, "catalog-more")}
     `;
   }
 
   function renderRepositoryRow(repo) {
-    const command = dockerPull(repo, "");
     return `
-      <tr class="clickable-row" data-repo="${escapeAttr(repo)}">
+      <tr class="clickable-row" data-repo="${escapeAttr(repo.name)}">
         <td>
           <div class="item-main">
             <span class="item-icon">R</span>
             <div>
-              <div class="item-name" title="${escapeAttr(repo)}">${escapeHtml(repo)}</div>
-              <div class="item-sub">Clique pour afficher les tags</div>
+              <div class="item-name" title="${escapeAttr(repo.name)}">${escapeHtml(repo.name)}</div>
+              <div class="item-sub">Open tags</div>
             </div>
           </div>
         </td>
-        <td><span class="code">${escapeHtml(command)}</span></td>
-        <td>
-          <div class="actions">
-            <button class="btn small" type="button" data-action="copy" data-value="${escapeAttr(command)}">Copier</button>
-            <button class="btn small primary" type="button" data-action="open-repo" data-repo="${escapeAttr(repo)}">Tags</button>
-          </div>
-        </td>
+        <td>${renderCount(repo.tagCount, repo.tagsTruncated)}</td>
+        <td>${repo.latestTag ? `<span class="code">${escapeHtml(repo.latestTag)}</span>` : mutedDash()}</td>
+        <td>${formatDate(repo.updatedAt)}</td>
       </tr>
     `;
   }
@@ -274,7 +249,10 @@
   function renderTags() {
     const tags = filteredTags();
     if (tags.length === 0) {
-      els.content.innerHTML = emptyState("Aucun tag", state.filter ? "Aucun tag ne correspond à la recherche." : "Ce repository ne contient aucun tag visible.");
+      els.content.innerHTML = emptyState(
+        "No tags",
+        state.filter ? "No tag matches the current search." : "This repository does not contain visible tags."
+      );
       return;
     }
 
@@ -284,8 +262,10 @@
           <thead>
             <tr>
               <th>Tag</th>
-              <th>Commande</th>
-              <th>Manifest</th>
+              <th>Digest</th>
+              <th>Type</th>
+              <th>Size</th>
+              <th>Created</th>
               <th class="is-right">Actions</th>
             </tr>
           </thead>
@@ -297,11 +277,9 @@
   }
 
   function renderTagRow(tag) {
-    const command = dockerPull(state.repo, tag);
-    const detail = state.tagDetails[tag];
-    const detailLoading = state.detailLoading[tag];
+    const imageRef = `${state.repo}:${tag.name}`;
     const deleteButton = state.config.deleteEnabled
-      ? `<button class="btn small danger" type="button" data-action="delete-tag" data-tag="${escapeAttr(tag)}">Supprimer</button>`
+      ? `<button class="btn small danger" type="button" data-action="delete-tag" data-tag="${escapeAttr(tag.name)}">Delete</button>`
       : "";
     return `
       <tr>
@@ -309,17 +287,19 @@
           <div class="item-main">
             <span class="item-icon">T</span>
             <div>
-              <div class="item-name" title="${escapeAttr(tag)}">${escapeHtml(tag)}</div>
+              <div class="item-name" title="${escapeAttr(tag.name)}">${escapeHtml(tag.name)}</div>
               <div class="item-sub">${escapeHtml(state.repo)}</div>
             </div>
           </div>
         </td>
-        <td><span class="code">${escapeHtml(command)}</span></td>
-        <td>${renderManifestCell(detail, detailLoading)}</td>
+        <td>${tag.digest ? `<span class="code digest" title="${escapeAttr(tag.digest)}">${escapeHtml(shortDigest(tag.digest))}</span>` : mutedDash()}</td>
+        <td>${tag.mediaType ? `<span class="badge">${escapeHtml(shortMediaType(tag.mediaType))}</span>` : mutedDash()}</td>
+        <td>${formatBytes(tag.size)}</td>
+        <td>${formatDate(tag.createdAt)}</td>
         <td>
           <div class="actions">
-            <button class="btn small" type="button" data-action="copy" data-value="${escapeAttr(command)}">Copier</button>
-            <button class="btn small" type="button" data-action="details" data-tag="${escapeAttr(tag)}" ${detailLoading ? "disabled" : ""}>Détails</button>
+            <button class="btn small" type="button" data-action="copy" data-value="${escapeAttr(imageRef)}">Copy</button>
+            <a class="btn small" href="${escapeAttr(api.downloadURL(state.repo, tag.name))}" download>Download</a>
             ${deleteButton}
           </div>
         </td>
@@ -327,23 +307,11 @@
     `;
   }
 
-  function renderManifestCell(detail, isLoading) {
-    if (isLoading) return `<span class="badge">Lecture</span>`;
-    if (!detail) return `<span class="badge">Non chargé</span>`;
-    const digest = detail.digest || "digest indisponible";
-    return `
-      <div class="meta">
-        <span class="code digest" title="${escapeAttr(digest)}">${escapeHtml(shortDigest(digest))}</span>
-        ${detail.mediaType ? `<span class="badge">${escapeHtml(shortMediaType(detail.mediaType))}</span>` : ""}
-      </div>
-    `;
-  }
-
   function footer(label, cursor, action) {
     return `
       <div class="footer-row">
-        <span>${escapeHtml(label)}${state.loading ? " · chargement..." : ""}</span>
-        ${cursor ? `<button class="btn small" type="button" data-action="${action}" ${state.loading ? "disabled" : ""}>Charger plus</button>` : `<span>Fin de liste</span>`}
+        <span>${escapeHtml(label)}${state.loading ? " · loading..." : ""}</span>
+        ${cursor ? `<button class="btn small" type="button" data-action="${action}" ${state.loading ? "disabled" : ""}>Load more</button>` : `<span>End of list</span>`}
       </div>
     `;
   }
@@ -358,12 +326,10 @@
       event.preventDefault();
       event.stopPropagation();
       const action = button.dataset.action;
-      if (action === "route-home") setRouteRepositories();
       if (action === "open-repo") setRouteRepository(button.dataset.repo || "");
       if (action === "copy") copyText(button.dataset.value || "");
       if (action === "catalog-more") loadCatalog(true);
       if (action === "tags-more") loadTags(true);
-      if (action === "details") loadTagDetails(button.dataset.tag || "");
       if (action === "delete-tag") deleteTag(button.dataset.tag || "");
       return;
     }
@@ -372,53 +338,27 @@
     if (row) setRouteRepository(row.dataset.repo || "");
   }
 
-  async function loadTagDetails(tag) {
-    if (!tag) return;
-    state.detailLoading[tag] = true;
-    renderContent();
-    try {
-      state.tagDetails[tag] = await api.manifestMetadata(state.config, state.repo, tag);
-      toast("Détails du manifest chargés");
-    } catch (error) {
-      toast(error.message || String(error));
-    } finally {
-      delete state.detailLoading[tag];
-      renderContent();
-    }
-  }
-
   async function deleteTag(tag) {
     if (!state.config.deleteEnabled || !tag) return;
-    const ok = window.confirm(`Supprimer le tag ${state.repo}:${tag} ?\n\nLe registre doit autoriser la suppression de manifests.`);
+    const ok = window.confirm(`Delete ${state.repo}:${tag}?\n\nThis removes the manifest reference from the registry.`);
     if (!ok) return;
 
-    state.detailLoading[tag] = true;
-    renderContent();
     try {
-      const detail = state.tagDetails[tag] || await api.manifestMetadata(state.config, state.repo, tag);
-      if (!detail.digest) throw new Error("digest du manifest introuvable");
-      await api.request(state.config, `/v2/${api.repoPath(state.repo)}/manifests/${api.refPath(detail.digest)}`, { method: "DELETE" });
-      state.tags = state.tags.filter((item) => item !== tag);
-      delete state.tagDetails[tag];
-      toast("Tag supprimé");
+      await api.deleteTag({ repo: state.repo, tag });
+      state.tags = state.tags.filter((item) => item.name !== tag);
+      toast("Tag deleted");
     } catch (error) {
       toast(error.message || String(error));
     } finally {
-      delete state.detailLoading[tag];
       renderContent();
     }
-  }
-
-  function dockerPull(repo, tag) {
-    const prefix = state.config.pullUrl ? `${state.config.pullUrl}/` : "";
-    return `docker pull ${prefix}${repo}${tag ? `:${tag}` : ""}`;
   }
 
   async function copyText(value) {
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      toast("Copié");
+      toast("Copied");
     } catch (_) {
       const input = document.createElement("textarea");
       input.value = value;
@@ -428,7 +368,7 @@
       input.select();
       document.execCommand("copy");
       input.remove();
-      toast("Copié");
+      toast("Copied");
     }
   }
 
@@ -440,8 +380,21 @@
     toastTimer = window.setTimeout(() => els.toast.classList.add("hidden"), 2600);
   }
 
-  function unique(items) {
-    return [...new Set(items.filter(Boolean))];
+  function renderCount(count, truncated) {
+    if (typeof count !== "number" || count < 0) return mutedDash();
+    return `<span class="badge">${truncated ? "≥ " : ""}${count}</span>`;
+  }
+
+  function mutedDash() { return `<span class="muted">—</span>`; }
+
+  function uniqueByName(items) {
+    const seen = new Set();
+    return items.filter((item) => {
+      const key = item && item.name;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   function shortDigest(digest) {
@@ -457,6 +410,32 @@
       .replace("application/vnd.", "")
       .replace("docker.distribution.", "docker.")
       .replace("oci.image.", "oci.");
+  }
+
+  function formatDate(value) {
+    if (!value) return mutedDash();
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return mutedDash();
+    return `<time datetime="${escapeAttr(date.toISOString())}">${escapeHtml(date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    }))}</time>`;
+  }
+
+  function formatBytes(value) {
+    const size = Number(value || 0);
+    if (!Number.isFinite(size) || size <= 0) return mutedDash();
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let unit = 0;
+    let amount = size;
+    while (amount >= 1024 && unit < units.length - 1) {
+      amount /= 1024;
+      unit += 1;
+    }
+    return `${amount.toFixed(amount >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
   }
 
   function escapeHtml(value) {
