@@ -204,6 +204,14 @@ func staticHandler() http.Handler {
 		}
 
 		if _, err := fs.Stat(sub, name); err != nil {
+			if shouldRedirectDirectoryLikeRequest(r) {
+				target := r.URL.Path + "/"
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+				return
+			}
 			serveIndex(w, sub)
 			return
 		}
@@ -213,6 +221,17 @@ func staticHandler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+func shouldRedirectDirectoryLikeRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.URL.Path == "" || r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, "/") {
+		return false
+	}
+	base := path.Base(r.URL.Path)
+	return !strings.Contains(base, ".")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -330,7 +349,51 @@ func appHandler(cfg serverConfig) http.Handler {
 	mux.Handle("/v2", proxy)
 	mux.Handle("/v2/", proxy)
 	mux.Handle("/", staticHandler())
-	return mux
+	return pathPrefixCompatHandler(mux)
+}
+
+func pathPrefixCompatHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rewritten := stripKnownMountPrefix(r); rewritten != nil {
+			next.ServeHTTP(w, rewritten)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func stripKnownMountPrefix(r *http.Request) *http.Request {
+	cleanPath := path.Clean("/" + r.URL.Path)
+	if cleanPath == "/" {
+		return nil
+	}
+
+	markers := []string{
+		"/config.json",
+		"/api/config",
+		"/health",
+		"/healthz",
+		"/ready",
+		"/v2/",
+		"/v2",
+		"/assets/",
+	}
+
+	for _, marker := range markers {
+		idx := strings.Index(cleanPath, marker)
+		if idx <= 0 {
+			continue
+		}
+
+		rewritten := r.Clone(r.Context())
+		rewrittenURL := *r.URL
+		rewrittenURL.Path = cleanPath[idx:]
+		rewrittenURL.RawPath = ""
+		rewritten.URL = &rewrittenURL
+		return rewritten
+	}
+
+	return nil
 }
 
 func serve() error {

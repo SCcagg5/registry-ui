@@ -60,7 +60,7 @@
 
   async function loadConfig() {
     try {
-      const response = await fetch("/config.json", { cache: "no-store" });
+      const response = await fetch("config.json", { cache: "no-store" });
       state.config = await response.json();
     } catch (_) {
       state.config = {

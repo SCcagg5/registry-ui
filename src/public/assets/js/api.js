@@ -13,8 +13,15 @@ window.RegistryUIApi = (() => {
     return String(base || "").replace(/\/+$/, "");
   }
 
+  function relativePath(requestPath) {
+    const path = String(requestPath || "").replace(/^\/+/, "");
+    return path || ".";
+  }
+
   function registryURL(config, requestPath) {
-    return normalizeBase(config.registryUrl) + requestPath;
+    const base = normalizeBase(config.registryUrl);
+    if (!base) return relativePath(requestPath);
+    return `${base}/${relativePath(requestPath)}`;
   }
 
   function requestOptions(options = {}) {
