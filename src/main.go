@@ -129,6 +129,8 @@ type repositorySummary struct {
 	Name          string `json:"name"`
 	TagCount      int    `json:"tagCount"`
 	TagsTruncated bool   `json:"tagsTruncated,omitempty"`
+	Size          int64  `json:"size,omitempty"`
+	SizeTruncated bool   `json:"sizeTruncated,omitempty"`
 	LatestTag     string `json:"latestTag,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 	Digest        string `json:"digest,omitempty"`
@@ -204,9 +206,9 @@ type layerDetail struct {
 type instructionDetail struct {
 	Line           int    `json:"line"`
 	Instruction    string `json:"instruction,omitempty"`
-	CreatedBy      string `json:"createdBy,omitempty"`
 	CreatedAt      string `json:"createdAt,omitempty"`
 	EmptyLayer     bool   `json:"emptyLayer,omitempty"`
+	Synthetic      bool   `json:"synthetic,omitempty"`
 	LayerIndex     int    `json:"layerIndex"`
 	LayerDigest    string `json:"layerDigest,omitempty"`
 	LayerSize      int64  `json:"layerSize,omitempty"`
@@ -712,15 +714,33 @@ func (a *app) enrichRepositories(ctx context.Context, repos []string) []reposito
 			}
 			summary := repositorySummary{Name: repo, TagCount: len(tags), TagsTruncated: truncated}
 			latest := selectLatestTag(tags)
-			if latest != "" {
-				summary.LatestTag = latest
-				meta, err := a.registry.tagMetadata(ctx, repo, latest)
-				if err == nil {
-					summary.UpdatedAt = meta.CreatedAt
+			summary.LatestTag = latest
+			seenDigests := make(map[string]struct{}, len(tags))
+			for _, tag := range tags {
+				if ctx.Err() != nil {
+					break
+				}
+				meta, err := a.registry.tagMetadata(ctx, repo, tag)
+				if err != nil {
+					continue
+				}
+				if meta.CreatedAt != "" {
+					summary.UpdatedAt = latestTime(summary.UpdatedAt, meta.CreatedAt)
+				}
+				digestKey := meta.Digest
+				if digestKey == "" {
+					digestKey = tag
+				}
+				if _, ok := seenDigests[digestKey]; !ok {
+					seenDigests[digestKey] = struct{}{}
+					summary.Size += meta.Size
+				}
+				if tag == latest {
 					summary.Digest = meta.Digest
 					summary.MediaType = meta.MediaType
 				}
 			}
+			summary.SizeTruncated = truncated
 			out[i] = summary
 		}()
 	}
@@ -1648,18 +1668,33 @@ func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerD
 		}
 	}
 
-	instructions := make([]instructionDetail, 0, len(cfg.History))
+	instructions := make([]instructionDetail, 0, len(cfg.History)+1)
+	nextLine := 1
+	insertScratch := likelyScratchBase(cfg)
+	scratchInserted := false
 	layerIndex := 0
 	var currentSize int64
-	for i, history := range cfg.History {
+	for _, history := range cfg.History {
 		instruction := cleanDockerInstruction(history.CreatedBy)
 		if instruction == "" {
 			instruction = strings.TrimSpace(history.Comment)
 		}
+		if insertScratch && !scratchInserted && !isArgInstruction(instruction) {
+			instructions = append(instructions, instructionDetail{
+				Line:           nextLine,
+				Instruction:    "FROM scratch",
+				CreatedAt:      normalizeTime(history.Created),
+				EmptyLayer:     true,
+				Synthetic:      true,
+				LayerIndex:     -1,
+				CumulativeSize: currentSize,
+			})
+			nextLine++
+			scratchInserted = true
+		}
 		item := instructionDetail{
-			Line:           i + 1,
+			Line:           nextLine,
 			Instruction:    instruction,
-			CreatedBy:      history.CreatedBy,
 			CreatedAt:      normalizeTime(history.Created),
 			EmptyLayer:     history.EmptyLayer,
 			LayerIndex:     -1,
@@ -1678,8 +1713,77 @@ func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerD
 			layerIndex++
 		}
 		instructions = append(instructions, item)
+		nextLine++
+	}
+	if insertScratch && !scratchInserted {
+		instructions = append(instructions, instructionDetail{
+			Line:           nextLine,
+			Instruction:    "FROM scratch",
+			CreatedAt:      firstHistoryTime(cfg.History),
+			EmptyLayer:     true,
+			Synthetic:      true,
+			LayerIndex:     -1,
+			CumulativeSize: currentSize,
+		})
 	}
 	return layers, instructions
+}
+
+func likelyScratchBase(cfg imageConfig) bool {
+	if len(cfg.History) == 0 || hasExplicitBaseInstruction(cfg.History) || hasEnvKey(cfg.Config.Env, "PATH") {
+		return false
+	}
+	first := ""
+	for _, history := range cfg.History {
+		first = cleanDockerInstruction(history.CreatedBy)
+		if first == "" {
+			first = strings.TrimSpace(history.Comment)
+		}
+		if first == "" || isArgInstruction(first) {
+			continue
+		}
+		break
+	}
+	upper := strings.ToUpper(strings.TrimSpace(first))
+	return strings.HasPrefix(upper, "ADD ") || strings.HasPrefix(upper, "COPY ")
+}
+
+func isArgInstruction(instruction string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(instruction))
+	return upper == "ARG" || strings.HasPrefix(upper, "ARG ")
+}
+
+func hasExplicitBaseInstruction(history []imageHistory) bool {
+	for _, item := range history {
+		instruction := strings.ToUpper(strings.TrimSpace(cleanDockerInstruction(item.CreatedBy)))
+		if instruction == "" {
+			instruction = strings.ToUpper(strings.TrimSpace(item.Comment))
+		}
+		if instruction == "FROM" || strings.HasPrefix(instruction, "FROM ") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvKey(env []string, key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	for _, item := range env {
+		name, _, _ := strings.Cut(item, "=")
+		if strings.ToUpper(strings.TrimSpace(name)) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func firstHistoryTime(history []imageHistory) string {
+	for _, item := range history {
+		if normalized := normalizeTime(item.Created); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
 }
 
 func cleanDockerInstruction(raw string) string {

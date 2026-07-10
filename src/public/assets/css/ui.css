@@ -30,9 +30,14 @@
   min-width: 34px;
   min-height: 34px;
   padding: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   font-size: 1.18rem;
   line-height: 1;
+}
+
+.back-btn.is-placeholder {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .icon {

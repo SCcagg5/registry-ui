@@ -83,6 +83,7 @@
     state.view = route.view;
     state.repo = route.repo || "";
     state.tag = route.tag || "";
+    releaseInactiveState(route.view);
     state.filter = "";
     state.error = "";
     state.tagDetail = null;
@@ -124,6 +125,25 @@
     else if (state.view === "tags") setRouteRepositories();
   }
 
+  function releaseInactiveState(nextView) {
+    if (nextView === "repositories") {
+      state.tags = [];
+      state.tagDetail = null;
+      state.tagsCursor = "";
+    } else if (nextView === "tags") {
+      state.repositories = [];
+      state.tags = [];
+      state.tagDetail = null;
+      state.catalogCursor = "";
+      state.tagsCursor = "";
+    } else {
+      state.repositories = [];
+      state.tags = [];
+      state.catalogCursor = "";
+      state.tagsCursor = "";
+    }
+  }
+
   function renderChrome() {
     const cfg = state.config || {};
     const isRepositories = state.view === "repositories";
@@ -137,7 +157,8 @@
         : "Registry UI";
 
     els.versionBadge.textContent = cfg.version || "dev";
-    els.backBtn.classList.toggle("hidden", isRepositories);
+    els.backBtn.classList.toggle("is-placeholder", isRepositories);
+    els.backBtn.disabled = isRepositories;
     els.viewTitle.textContent = isTagDetail ? `${state.repo}:${state.tag}` : isTags ? state.repo : "Repositories";
     els.searchField.classList.toggle("hidden", isTagDetail);
     els.searchInput.placeholder = isTags ? "Filter tags" : "Image or namespace";
@@ -267,6 +288,7 @@
             <tr>
               <th>Repository</th>
               <th>Tags</th>
+              <th>Size</th>
               <th>Latest version</th>
               <th>Last updated</th>
             </tr>
@@ -286,8 +308,9 @@
             <span class="item-name" title="${escapeAttr(repo.name)}">${escapeHtml(repo.name)}</span>
           </div>
         </td>
-        <td>${renderCount(repo.tagCount, repo.tagsTruncated)}</td>
-        <td>${repo.latestTag ? `<span class="code">${escapeHtml(repo.latestTag)}</span>` : mutedDash()}</td>
+        <td>${renderTagCount(repo.tagCount, repo.tagsTruncated)}</td>
+        <td>${formatRepositorySize(repo)}</td>
+        <td>${renderLatestTag(repo)}</td>
         <td>${formatDate(repo.updatedAt)}</td>
       </tr>
     `;
@@ -326,7 +349,7 @@
   function renderTagRow(tag) {
     const imageRef = `${state.repo}:${tag.name}`;
     return `
-      <tr>
+      <tr class="clickable-row" data-tag="${escapeAttr(tag.name)}">
         <td>
           <div class="cell-with-action">
             <button class="link-value" type="button" data-action="open-tag" data-tag="${escapeAttr(tag.name)}" title="Open tag details">
@@ -460,7 +483,7 @@
 
         <h4>Reconstructed Dockerfile</h4>
         <p class="section-note">Built from image history. Exact original Dockerfile comments, multi-line formatting and build-time values may not be present in the registry metadata.</p>
-        ${renderDockerfileTable(image.instructions)}
+        ${renderDockerfileEditor(image.instructions)}
       </section>
     `;
   }
@@ -496,38 +519,55 @@
     `;
   }
 
-  function renderDockerfileTable(instructions) {
+  function renderDockerfileEditor(instructions) {
     const rows = Array.isArray(instructions) ? instructions : [];
     if (rows.length === 0) return `<div class="empty-inline">No Dockerfile history</div>`;
     return `
-      <div class="table-wrap detail-table-wrap">
-        <table class="compact-table dockerfile-table">
-          <thead>
-            <tr>
-              <th>Instruction</th>
-              <th>Updated</th>
-              <th>Layer</th>
-              <th>Increase</th>
-              <th>Cumulative</th>
-            </tr>
-          </thead>
-          <tbody>${rows.map((item) => `
-            <tr>
-              <td>
-                <div class="docker-line">
-                  <code>${highlightDockerInstruction(item.instruction || item.createdBy || "")}</code>
-                  <span class="docker-ln">${Number(item.line || 0)}</span>
-                </div>
-              </td>
-              <td>${formatDate(item.createdAt)}</td>
-              <td>${item.layerDigest ? renderCopyValue(item.layerDigest, item.layerDigest, shortDigest(item.layerDigest)) : `<span class="muted">metadata</span>`}</td>
-              <td>${item.layerDigest ? formatBytes(item.layerSize) : mutedDash()}</td>
-              <td>${formatBytes(item.cumulativeSize)}</td>
-            </tr>
-          `).join("")}</tbody>
-        </table>
+      <div class="docker-editor" role="region" aria-label="Reconstructed Dockerfile">
+        ${rows.map(renderDockerfileEditorLine).join("")}
       </div>
     `;
+  }
+
+  function renderDockerfileEditorLine(item) {
+    const instruction = item.instruction || "";
+    const line = Number(item.line || 0);
+    const classes = ["docker-editor-line"];
+    if (item.synthetic) classes.push("is-synthetic");
+    return `
+      <div class="${classes.join(" ")}" title="${escapeAttr(dockerLineTitle(item))}">
+        <code class="docker-code">${highlightDockerInstruction(instruction)}</code>
+        <span class="docker-meta">${dockerLineMeta(item)}</span>
+        <span class="docker-ln">${line}</span>
+      </div>
+    `;
+  }
+
+  function dockerLineMeta(item) {
+    if (item.synthetic) return `<span>inferred</span>`;
+    const parts = [];
+    const date = formatDateText(item.createdAt);
+    if (date) parts.push(`<span>${escapeHtml(date)}</span>`);
+    if (item.layerDigest) {
+      parts.push(`<span title="${escapeAttr(item.layerDigest)}">${escapeHtml(shortDigest(item.layerDigest))}</span>`);
+      const increase = formatBytesText(item.layerSize);
+      const cumulative = formatBytesText(item.cumulativeSize);
+      if (increase) parts.push(`<span>+${escapeHtml(increase)}</span>`);
+      if (cumulative) parts.push(`<span>${escapeHtml(cumulative)}</span>`);
+    } else {
+      parts.push(`<span>metadata</span>`);
+    }
+    return parts.join("");
+  }
+
+  function dockerLineTitle(item) {
+    const parts = [];
+    if (item.synthetic) parts.push("Inferred base image");
+    if (item.createdAt) parts.push(`Updated: ${formatDateText(item.createdAt)}`);
+    if (item.layerDigest) parts.push(`Layer: ${item.layerDigest}`);
+    if (item.layerSize) parts.push(`Increase: ${formatBytesText(item.layerSize)}`);
+    if (item.cumulativeSize) parts.push(`Cumulative: ${formatBytesText(item.cumulativeSize)}`);
+    return parts.join(" | ");
   }
 
   function renderKeyValueTable(values, empty) {
@@ -602,7 +642,7 @@
         return;
       }
       if (action === "open-repo") setRouteRepository(actionEl.dataset.repo || "");
-      if (action === "open-tag") setRouteTag(state.repo, actionEl.dataset.tag || "");
+      if (action === "open-tag") setRouteTag(actionEl.dataset.repo || state.repo, actionEl.dataset.tag || "");
       if (action === "copy") copyText(actionEl.dataset.value || "");
       if (action === "catalog-more") loadCatalog(true);
       if (action === "tags-more") loadTags(true);
@@ -611,8 +651,14 @@
       return;
     }
 
-    const row = event.target.closest("tr[data-repo]");
-    if (row) setRouteRepository(row.dataset.repo || "");
+    const repoRow = event.target.closest("tr[data-repo]");
+    if (repoRow) {
+      setRouteRepository(repoRow.dataset.repo || "");
+      return;
+    }
+
+    const tagRow = event.target.closest("tr[data-tag]");
+    if (tagRow && state.view === "tags") setRouteTag(state.repo, tagRow.dataset.tag || "");
   }
 
   function onDocumentChange(event) {
@@ -718,9 +764,24 @@
     toastTimer = window.setTimeout(() => els.toast.classList.add("hidden"), 2600);
   }
 
-  function renderCount(count, truncated) {
+  function renderTagCount(count, truncated) {
     if (typeof count !== "number" || count < 0) return mutedDash();
-    return `<span class="badge">${truncated ? "≥ " : ""}${count}</span>`;
+    return `${truncated ? "≥ " : ""}${count}`;
+  }
+
+  function formatRepositorySize(repo) {
+    const text = formatBytesText(repo && repo.size);
+    if (!text) return mutedDash();
+    return `${repo.sizeTruncated ? "≥ " : ""}${escapeHtml(text)}`;
+  }
+
+  function renderLatestTag(repo) {
+    if (!repo || !repo.latestTag) return mutedDash();
+    return `
+      <button class="latest-tag" type="button" data-action="open-tag" data-repo="${escapeAttr(repo.name)}" data-tag="${escapeAttr(repo.latestTag)}" title="Open ${escapeAttr(repo.name)}:${escapeAttr(repo.latestTag)}">
+        ${escapeHtml(repo.latestTag)}
+      </button>
+    `;
   }
 
   function renderPlatforms(platforms, extraClass = "") {
@@ -767,13 +828,8 @@
     if (!value) return "";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "";
-    return date.toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
+    const pad = (number) => String(number).padStart(2, "0");
+    return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}h${pad(date.getMinutes())}`;
   }
 
   function formatBytes(value) {

@@ -144,6 +144,7 @@ tr:last-child td { border-bottom: 0; }
 tbody tr { transition: background .14s ease; }
 tbody tr:hover { background: #f8fbff; }
 tr.clickable-row { cursor: pointer; }
+tr.clickable-row:focus-within { background: #f8fbff; }
 
 .item-main {
   display: flex;
@@ -186,6 +187,25 @@ tr.clickable-row { cursor: pointer; }
   white-space: nowrap;
 }
 .link-value:hover { color: var(--brand); text-decoration: underline; }
+
+.latest-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  padding: 5px 9px;
+  overflow: hidden;
+  color: #344054;
+  background: #f2f4f7;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: .82rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.latest-tag:hover { color: var(--brand); border-color: #bfdbfe; background: #eff6ff; }
 
 .actions {
   display: flex;
@@ -274,6 +294,8 @@ tr.clickable-row { cursor: pointer; }
   background: #ffffff;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 520px;
 }
 
 .detail-card-head {
@@ -398,24 +420,31 @@ tr.clickable-row { cursor: pointer; }
   padding: 11px 12px;
 }
 
-.dockerfile-table { min-width: 1100px; }
-
-.docker-line {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  min-width: 440px;
-  padding: 8px 10px;
+.docker-editor {
+  overflow: auto;
   color: #24292f;
   background: #f6f8fa;
   border: 1px solid #d8dee4;
   border-radius: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: .83rem;
+  font-size: .84rem;
 }
 
-.docker-line code {
+.docker-editor-line {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) auto 3ch;
+  align-items: center;
+  gap: 14px;
+  min-width: 920px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #eaeef2;
+}
+
+.docker-editor-line:last-child { border-bottom: 0; }
+.docker-editor-line:hover { background: #ffffff; }
+.docker-editor-line.is-synthetic { background: #fbfcfe; }
+
+.docker-code {
   min-width: 0;
   overflow: hidden;
   color: inherit;
@@ -423,9 +452,28 @@ tr.clickable-row { cursor: pointer; }
   white-space: nowrap;
 }
 
+.docker-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  color: #667085;
+  font-size: .78rem;
+  white-space: nowrap;
+}
+
+.docker-meta span {
+  display: inline-flex;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .docker-ln {
   color: #8c959f;
   font-variant-numeric: tabular-nums;
+  text-align: right;
   user-select: none;
 }
 
@@ -447,6 +495,7 @@ tr.clickable-row { cursor: pointer; }
   .field input,
   .field select { width: 100%; }
   .toolbar h2 { white-space: normal; }
+  .docker-editor-line { grid-template-columns: minmax(420px, 1fr) auto 3ch; }
   .footer-row,
   .detail-card-head { align-items: stretch; flex-direction: column; }
   .summary-grid,
