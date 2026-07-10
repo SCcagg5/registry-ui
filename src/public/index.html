@@ -11,10 +11,7 @@
   <div id="app">
     <header class="top">
       <div class="container head">
-        <div>
-          <h1>Registry UI</h1>
-          <p>Docker Registry browser</p>
-        </div>
+        <h1>Registry UI</h1>
         <span id="versionBadge" class="version">dev</span>
       </div>
     </header>
@@ -22,26 +19,14 @@
     <main class="container main">
       <section class="panel toolbar" aria-label="Main actions">
         <div class="toolbar-title">
-          <button id="backBtn" class="btn ghost hidden" type="button">← Back</button>
-          <div class="title-block">
-            <h2 id="viewTitle">Repositories</h2>
-            <p id="viewSubtitle">Docker Registry catalog</p>
-          </div>
+          <button id="backBtn" class="btn ghost back-btn hidden" type="button" title="Back" aria-label="Back">←</button>
+          <h2 id="viewTitle">Repositories</h2>
         </div>
         <div class="toolbar-actions">
           <label class="field">
             <span>Search</span>
             <input id="searchInput" type="search" autocomplete="off" placeholder="Image or namespace" />
           </label>
-          <label class="field compact">
-            <span>Page size</span>
-            <select id="pageSizeSelect" autocomplete="off">
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
-          </label>
-          <button id="refreshBtn" class="btn primary" type="button">Refresh</button>
         </div>
       </section>
 

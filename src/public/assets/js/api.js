@@ -78,6 +78,10 @@ window.RegistryUIApi = (() => {
     return json(`api/tags?${params({ repo, n: pageSize, last: cursor })}`);
   }
 
+  async function tagDetails({ repo, tag } = {}) {
+    return json(`api/tag?${params({ repo, tag })}`);
+  }
+
   async function deleteTag({ repo, tag } = {}) {
     return json(`api/delete?${params({ repo, tag })}`, { method: "DELETE" });
   }
@@ -86,5 +90,5 @@ window.RegistryUIApi = (() => {
     return appURL(`api/download?${params({ repo, tag })}`);
   }
 
-  return { appURL, config, catalog, tags, deleteTag, downloadURL };
+  return { appURL, config, catalog, tags, tagDetails, deleteTag, downloadURL };
 })();

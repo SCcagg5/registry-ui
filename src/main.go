@@ -117,11 +117,12 @@ type manifestData struct {
 }
 
 type tagSummary struct {
-	Name      string `json:"name"`
-	Digest    string `json:"digest,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	CreatedAt string `json:"createdAt,omitempty"`
+	Name      string   `json:"name"`
+	Digest    string   `json:"digest,omitempty"`
+	MediaType string   `json:"mediaType,omitempty"`
+	Size      int64    `json:"size,omitempty"`
+	CreatedAt string   `json:"createdAt,omitempty"`
+	Platforms []string `json:"platforms,omitempty"`
 }
 
 type repositorySummary struct {
@@ -149,12 +150,137 @@ type apiTagsResponse struct {
 	DeleteEnabled bool         `json:"deleteEnabled"`
 }
 
+type tagDetailResponse struct {
+	Repository    string        `json:"repository"`
+	Tag           string        `json:"tag"`
+	Digest        string        `json:"digest,omitempty"`
+	MediaType     string        `json:"mediaType,omitempty"`
+	Size          int64         `json:"size,omitempty"`
+	CreatedAt     string        `json:"createdAt,omitempty"`
+	Platforms     []string      `json:"platforms,omitempty"`
+	Images        []imageDetail `json:"images,omitempty"`
+	DeleteEnabled bool          `json:"deleteEnabled"`
+}
+
+type imageDetail struct {
+	Platform     string              `json:"platform,omitempty"`
+	Digest       string              `json:"digest,omitempty"`
+	MediaType    string              `json:"mediaType,omitempty"`
+	Size         int64               `json:"size,omitempty"`
+	ConfigDigest string              `json:"configDigest,omitempty"`
+	ConfigSize   int64               `json:"configSize,omitempty"`
+	CreatedAt    string              `json:"createdAt,omitempty"`
+	Author       string              `json:"author,omitempty"`
+	OS           string              `json:"os,omitempty"`
+	Architecture string              `json:"architecture,omitempty"`
+	Variant      string              `json:"variant,omitempty"`
+	User         string              `json:"user,omitempty"`
+	WorkingDir   string              `json:"workingDir,omitempty"`
+	Entrypoint   []string            `json:"entrypoint,omitempty"`
+	Cmd          []string            `json:"cmd,omitempty"`
+	Env          []string            `json:"env,omitempty"`
+	Labels       map[string]string   `json:"labels,omitempty"`
+	Args         []string            `json:"args,omitempty"`
+	ExposedPorts []string            `json:"exposedPorts,omitempty"`
+	Volumes      []string            `json:"volumes,omitempty"`
+	StopSignal   string              `json:"stopSignal,omitempty"`
+	RootFSType   string              `json:"rootFSType,omitempty"`
+	Layers       []layerDetail       `json:"layers,omitempty"`
+	Instructions []instructionDetail `json:"instructions,omitempty"`
+}
+
+type layerDetail struct {
+	Index           int    `json:"index"`
+	Digest          string `json:"digest,omitempty"`
+	DiffID          string `json:"diffID,omitempty"`
+	MediaType       string `json:"mediaType,omitempty"`
+	Size            int64  `json:"size,omitempty"`
+	CumulativeSize  int64  `json:"cumulativeSize,omitempty"`
+	Instruction     string `json:"instruction,omitempty"`
+	InstructionLine int    `json:"instructionLine,omitempty"`
+	CreatedAt       string `json:"createdAt,omitempty"`
+}
+
+type instructionDetail struct {
+	Line           int    `json:"line"`
+	Instruction    string `json:"instruction,omitempty"`
+	CreatedBy      string `json:"createdBy,omitempty"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+	EmptyLayer     bool   `json:"emptyLayer,omitempty"`
+	LayerIndex     int    `json:"layerIndex"`
+	LayerDigest    string `json:"layerDigest,omitempty"`
+	LayerSize      int64  `json:"layerSize,omitempty"`
+	CumulativeSize int64  `json:"cumulativeSize,omitempty"`
+}
+
+type imageConfig struct {
+	Created      string             `json:"created,omitempty"`
+	Author       string             `json:"author,omitempty"`
+	Architecture string             `json:"architecture,omitempty"`
+	OS           string             `json:"os,omitempty"`
+	Variant      string             `json:"variant,omitempty"`
+	Config       imageConfigRuntime `json:"config,omitempty"`
+	RootFS       imageRootFS        `json:"rootfs,omitempty"`
+	History      []imageHistory     `json:"history,omitempty"`
+}
+
+type imageConfigRuntime struct {
+	User         string            `json:"User,omitempty"`
+	Env          []string          `json:"Env,omitempty"`
+	Entrypoint   stringList        `json:"Entrypoint,omitempty"`
+	Cmd          stringList        `json:"Cmd,omitempty"`
+	WorkingDir   string            `json:"WorkingDir,omitempty"`
+	Labels       map[string]string `json:"Labels,omitempty"`
+	ExposedPorts map[string]any    `json:"ExposedPorts,omitempty"`
+	Volumes      map[string]any    `json:"Volumes,omitempty"`
+	StopSignal   string            `json:"StopSignal,omitempty"`
+}
+
+type imageRootFS struct {
+	Type    string   `json:"type,omitempty"`
+	DiffIDs []string `json:"diff_ids,omitempty"`
+}
+
+type imageHistory struct {
+	Created    string `json:"created,omitempty"`
+	CreatedBy  string `json:"created_by,omitempty"`
+	Author     string `json:"author,omitempty"`
+	Comment    string `json:"comment,omitempty"`
+	EmptyLayer bool   `json:"empty_layer,omitempty"`
+}
+
+type stringList []string
+
 type imageArchive struct {
 	Manifest descriptor
 	Body     []byte
 	Config   descriptor
 	Layers   []descriptor
 	Tag      string
+}
+
+func (s *stringList) UnmarshalJSON(body []byte) error {
+	trimmed := bytes.TrimSpace(body)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*s = nil
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal(trimmed, &items); err == nil {
+		*s = items
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(trimmed, &single); err == nil {
+		if strings.TrimSpace(single) == "" {
+			*s = nil
+		} else {
+			*s = []string{single}
+		}
+		return nil
+	}
+	*s = nil
+	return nil
 }
 
 func env(name, fallback string) string {
@@ -454,6 +580,28 @@ func (a *app) tagsHandler() http.Handler {
 	})
 }
 
+func (a *app) tagDetailHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+		tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+		if repo == "" || tag == "" {
+			writeError(w, http.StatusBadRequest, errors.New("missing repo or tag"))
+			return
+		}
+		detail, err := a.registry.tagDetail(r.Context(), repo, tag)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		detail.DeleteEnabled = a.deleteAllowed(r.Context())
+		writeJSON(w, http.StatusOK, detail)
+	})
+}
+
 func (a *app) deleteHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -702,6 +850,7 @@ func (c *registryClient) tagMetadata(ctx context.Context, repo, tag string) (tag
 		Digest:    root.Descriptor.Digest,
 		MediaType: root.Descriptor.MediaType,
 		Size:      root.Descriptor.Size,
+		Platforms: platformsFromManifest(root),
 	}
 	imageManifest := root
 	if isIndexManifest(root) {
@@ -716,15 +865,145 @@ func (c *registryClient) tagMetadata(ctx context.Context, repo, tag string) (tag
 		imageManifest = child
 	}
 	if imageManifest.Envelope.Config != nil {
-		if created, err := c.configCreated(ctx, repo, imageManifest.Envelope.Config.Digest); err == nil {
+		meta.Size = imageManifest.Envelope.Config.Size
+		if cfg, _, err := c.fetchImageConfig(ctx, repo, imageManifest.Envelope.Config.Digest); err == nil {
+			meta.CreatedAt = normalizeTime(cfg.Created)
+			if len(meta.Platforms) == 0 {
+				if platform := platformFromConfig(cfg); platform != "" {
+					meta.Platforms = []string{platform}
+				}
+			}
+		} else if created, err := c.configCreated(ctx, repo, imageManifest.Envelope.Config.Digest); err == nil {
 			meta.CreatedAt = created
 		}
-		meta.Size = imageManifest.Envelope.Config.Size
 	}
 	for _, layer := range imageManifest.Envelope.Layers {
 		meta.Size += layer.Size
 	}
 	return meta, nil
+}
+
+func (c *registryClient) tagDetail(ctx context.Context, repo, tag string) (tagDetailResponse, error) {
+	root, err := c.fetchManifest(ctx, repo, tag)
+	if err != nil {
+		return tagDetailResponse{}, err
+	}
+
+	detail := tagDetailResponse{
+		Repository: repo,
+		Tag:        tag,
+		Digest:     root.Descriptor.Digest,
+		MediaType:  root.Descriptor.MediaType,
+		Size:       root.Descriptor.Size,
+		Platforms:  platformsFromManifest(root),
+	}
+
+	if isIndexManifest(root) {
+		for _, item := range root.Envelope.Manifests {
+			platformName := platformToString(item.Platform)
+			if platformName == "" {
+				continue
+			}
+			child, err := c.fetchManifest(ctx, repo, item.Digest)
+			if err != nil {
+				continue
+			}
+			image, err := c.imageDetail(ctx, repo, item, child)
+			if err != nil {
+				continue
+			}
+			detail.Images = append(detail.Images, image)
+			detail.Size += image.Size
+			detail.CreatedAt = latestTime(detail.CreatedAt, image.CreatedAt)
+		}
+		if len(detail.Images) == 0 {
+			return detail, errors.New("manifest index does not contain a readable image manifest")
+		}
+		return detail, nil
+	}
+
+	image, err := c.imageDetail(ctx, repo, root.Descriptor, root)
+	if err != nil {
+		return detail, err
+	}
+	detail.Images = []imageDetail{image}
+	detail.Size = image.Size
+	detail.CreatedAt = image.CreatedAt
+	if len(detail.Platforms) == 0 && image.Platform != "" {
+		detail.Platforms = []string{image.Platform}
+	}
+	return detail, nil
+}
+
+func (c *registryClient) imageDetail(ctx context.Context, repo string, desc descriptor, manifest manifestData) (imageDetail, error) {
+	if manifest.Envelope.Config == nil {
+		return imageDetail{}, errors.New("manifest does not contain an image config")
+	}
+	cfg, _, err := c.fetchImageConfig(ctx, repo, manifest.Envelope.Config.Digest)
+	if err != nil {
+		return imageDetail{}, err
+	}
+
+	layers, instructions := buildImageHistory(manifest.Envelope.Layers, cfg)
+	platformName := platformToString(desc.Platform)
+	if platformName == "" {
+		platformName = platformFromConfig(cfg)
+	}
+	size := manifest.Envelope.Config.Size
+	for _, layer := range manifest.Envelope.Layers {
+		size += layer.Size
+	}
+
+	return imageDetail{
+		Platform:     platformName,
+		Digest:       manifest.Descriptor.Digest,
+		MediaType:    manifest.Descriptor.MediaType,
+		Size:         size,
+		ConfigDigest: manifest.Envelope.Config.Digest,
+		ConfigSize:   manifest.Envelope.Config.Size,
+		CreatedAt:    normalizeTime(cfg.Created),
+		Author:       firstNonEmpty(cfg.Author, historyAuthor(cfg.History)),
+		OS:           cfg.OS,
+		Architecture: cfg.Architecture,
+		Variant:      cfg.Variant,
+		User:         cfg.Config.User,
+		WorkingDir:   cfg.Config.WorkingDir,
+		Entrypoint:   []string(cfg.Config.Entrypoint),
+		Cmd:          []string(cfg.Config.Cmd),
+		Env:          cfg.Config.Env,
+		Labels:       cfg.Config.Labels,
+		Args:         detectBuildArgs(instructions),
+		ExposedPorts: sortedMapKeys(cfg.Config.ExposedPorts),
+		Volumes:      sortedMapKeys(cfg.Config.Volumes),
+		StopSignal:   cfg.Config.StopSignal,
+		RootFSType:   cfg.RootFS.Type,
+		Layers:       layers,
+		Instructions: instructions,
+	}, nil
+}
+
+func (c *registryClient) fetchImageConfig(ctx context.Context, repo, digest string) (imageConfig, []byte, error) {
+	body, err := c.readBlob(ctx, repo, digest, registryRequestLimit)
+	if err != nil {
+		return imageConfig{}, nil, err
+	}
+	var cfg imageConfig
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return imageConfig{}, body, err
+	}
+	return cfg, body, nil
+}
+
+func (c *registryClient) readBlob(ctx context.Context, repo, digest string, limit int64) ([]byte, error) {
+	resp, err := c.request(ctx, http.MethodGet, fmt.Sprintf("/v2/%s/blobs/%s", repoPath(repo), refPath(digest)), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, registryStatusError(resp)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
 func (c *registryClient) fetchManifest(ctx context.Context, repo, ref string) (manifestData, error) {
@@ -933,6 +1212,7 @@ func appHandler(cfg serverConfig) http.Handler {
 	mux.Handle("/api/config", config)
 	mux.Handle("/api/catalog", a.catalogHandler())
 	mux.Handle("/api/tags", a.tagsHandler())
+	mux.Handle("/api/tag", a.tagDetailHandler())
 	mux.Handle("/api/delete", a.deleteHandler())
 	mux.Handle("/api/download", a.downloadHandler())
 	mux.Handle("/health", healthHandler("health"))
@@ -1303,6 +1583,203 @@ func parseVersionTag(tag string) ([3]int, bool) {
 		out[i] = value
 	}
 	return out, true
+}
+
+func platformsFromManifest(data manifestData) []string {
+	if isIndexManifest(data) {
+		items := make([]string, 0, len(data.Envelope.Manifests))
+		for _, item := range data.Envelope.Manifests {
+			if platform := platformToString(item.Platform); platform != "" {
+				items = append(items, platform)
+			}
+		}
+		return uniqueStrings(items)
+	}
+	return nil
+}
+
+func platformToString(p *platform) string {
+	if p == nil {
+		return ""
+	}
+	osName := strings.TrimSpace(p.OS)
+	arch := strings.TrimSpace(p.Architecture)
+	variant := strings.TrimSpace(p.Variant)
+	if osName == "" || arch == "" || (osName == "unknown" && arch == "unknown") {
+		return ""
+	}
+	value := osName + "/" + arch
+	if variant != "" {
+		value += "/" + variant
+	}
+	return value
+}
+
+func platformFromConfig(cfg imageConfig) string {
+	osName := strings.TrimSpace(cfg.OS)
+	arch := strings.TrimSpace(cfg.Architecture)
+	variant := strings.TrimSpace(cfg.Variant)
+	if osName == "" || arch == "" || (osName == "unknown" && arch == "unknown") {
+		return ""
+	}
+	value := osName + "/" + arch
+	if variant != "" {
+		value += "/" + variant
+	}
+	return value
+}
+
+func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerDetail, []instructionDetail) {
+	layers := make([]layerDetail, len(layerDescriptors))
+	var cumulative int64
+	for i, desc := range layerDescriptors {
+		cumulative += desc.Size
+		diffID := ""
+		if i < len(cfg.RootFS.DiffIDs) {
+			diffID = cfg.RootFS.DiffIDs[i]
+		}
+		layers[i] = layerDetail{
+			Index:          i + 1,
+			Digest:         desc.Digest,
+			DiffID:         diffID,
+			MediaType:      desc.MediaType,
+			Size:           desc.Size,
+			CumulativeSize: cumulative,
+		}
+	}
+
+	instructions := make([]instructionDetail, 0, len(cfg.History))
+	layerIndex := 0
+	var currentSize int64
+	for i, history := range cfg.History {
+		instruction := cleanDockerInstruction(history.CreatedBy)
+		if instruction == "" {
+			instruction = strings.TrimSpace(history.Comment)
+		}
+		item := instructionDetail{
+			Line:           i + 1,
+			Instruction:    instruction,
+			CreatedBy:      history.CreatedBy,
+			CreatedAt:      normalizeTime(history.Created),
+			EmptyLayer:     history.EmptyLayer,
+			LayerIndex:     -1,
+			CumulativeSize: currentSize,
+		}
+		if !history.EmptyLayer && layerIndex < len(layers) {
+			layer := &layers[layerIndex]
+			item.LayerIndex = layer.Index
+			item.LayerDigest = layer.Digest
+			item.LayerSize = layer.Size
+			item.CumulativeSize = layer.CumulativeSize
+			currentSize = layer.CumulativeSize
+			layer.InstructionLine = item.Line
+			layer.Instruction = instruction
+			layer.CreatedAt = item.CreatedAt
+			layerIndex++
+		}
+		instructions = append(instructions, item)
+	}
+	return layers, instructions
+}
+
+func cleanDockerInstruction(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "#(nop)") {
+		parts := strings.SplitN(value, "#(nop)", 2)
+		return strings.TrimSpace(parts[1])
+	}
+	if strings.HasPrefix(value, "/bin/sh -c ") {
+		return "RUN " + strings.TrimSpace(strings.TrimPrefix(value, "/bin/sh -c "))
+	}
+	if strings.HasPrefix(value, "RUN |") {
+		if _, cmd, ok := strings.Cut(value, "/bin/sh -c "); ok {
+			return "RUN " + strings.TrimSpace(cmd)
+		}
+	}
+	return value
+}
+
+func detectBuildArgs(instructions []instructionDetail) []string {
+	seen := map[string]struct{}{}
+	var args []string
+	for _, item := range instructions {
+		value := strings.TrimSpace(item.Instruction)
+		if len(value) < 4 || !strings.EqualFold(value[:3], "ARG") || !isSpaceOrEnd(value, 3) {
+			continue
+		}
+		arg := strings.TrimSpace(value[3:])
+		if arg == "" {
+			continue
+		}
+		if _, ok := seen[arg]; ok {
+			continue
+		}
+		seen[arg] = struct{}{}
+		args = append(args, arg)
+	}
+	sort.Strings(args)
+	return args
+}
+
+func isSpaceOrEnd(value string, index int) bool {
+	if len(value) <= index {
+		return true
+	}
+	return value[index] == ' ' || value[index] == '\t'
+}
+
+func sortedMapKeys[V any](items map[string]V) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for key := range items {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func historyAuthor(history []imageHistory) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if strings.TrimSpace(history[i].Author) != "" {
+			return strings.TrimSpace(history[i].Author)
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func latestTime(current, candidate string) string {
+	if current == "" {
+		return candidate
+	}
+	if candidate == "" {
+		return current
+	}
+	ct, cErr := time.Parse(time.RFC3339, current)
+	nt, nErr := time.Parse(time.RFC3339, candidate)
+	if cErr != nil || nErr != nil {
+		if candidate > current {
+			return candidate
+		}
+		return current
+	}
+	if nt.After(ct) {
+		return candidate
+	}
+	return current
 }
 
 func blobPath(digest string) string {
