@@ -90,5 +90,9 @@ window.RegistryUIApi = (() => {
     return appURL(`api/download?${params({ repo, tag })}`);
   }
 
-  return { appURL, config, catalog, tags, tagDetails, deleteTag, downloadURL };
+  function dockerDownloadURL(repo, tag, digest) {
+    return appURL(`api/download/docker?${params({ repo, tag, digest })}`);
+  }
+
+  return { appURL, config, catalog, tags, tagDetails, deleteTag, downloadURL, dockerDownloadURL };
 })();

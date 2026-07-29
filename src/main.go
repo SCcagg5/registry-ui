@@ -103,11 +103,12 @@ type platform struct {
 }
 
 type manifestEnvelope struct {
-	SchemaVersion int          `json:"schemaVersion"`
-	MediaType     string       `json:"mediaType,omitempty"`
-	Config        *descriptor  `json:"config,omitempty"`
-	Layers        []descriptor `json:"layers,omitempty"`
-	Manifests     []descriptor `json:"manifests,omitempty"`
+	SchemaVersion int               `json:"schemaVersion"`
+	MediaType     string            `json:"mediaType,omitempty"`
+	Config        *descriptor       `json:"config,omitempty"`
+	Layers        []descriptor      `json:"layers,omitempty"`
+	Manifests     []descriptor      `json:"manifests,omitempty"`
+	Annotations   map[string]string `json:"annotations,omitempty"`
 }
 
 type manifestData struct {
@@ -158,9 +159,14 @@ type tagDetailResponse struct {
 	Digest        string        `json:"digest,omitempty"`
 	MediaType     string        `json:"mediaType,omitempty"`
 	Size          int64         `json:"size,omitempty"`
+	ConfigSize    int64         `json:"configSize,omitempty"`
+	LayerSize     int64         `json:"layerSize,omitempty"`
+	ManifestSize  int64         `json:"manifestSize,omitempty"`
+	IndexSize     int64         `json:"indexSize,omitempty"`
 	CreatedAt     string        `json:"createdAt,omitempty"`
 	Platforms     []string      `json:"platforms,omitempty"`
 	Images        []imageDetail `json:"images,omitempty"`
+	SingleTag     bool          `json:"singleTag"`
 	DeleteEnabled bool          `json:"deleteEnabled"`
 }
 
@@ -171,6 +177,8 @@ type imageDetail struct {
 	Size         int64               `json:"size,omitempty"`
 	ConfigDigest string              `json:"configDigest,omitempty"`
 	ConfigSize   int64               `json:"configSize,omitempty"`
+	LayerSize    int64               `json:"layerSize,omitempty"`
+	ManifestSize int64               `json:"manifestSize,omitempty"`
 	CreatedAt    string              `json:"createdAt,omitempty"`
 	Author       string              `json:"author,omitempty"`
 	OS           string              `json:"os,omitempty"`
@@ -236,6 +244,16 @@ type imageConfigRuntime struct {
 	ExposedPorts map[string]any    `json:"ExposedPorts,omitempty"`
 	Volumes      map[string]any    `json:"Volumes,omitempty"`
 	StopSignal   string            `json:"StopSignal,omitempty"`
+	Healthcheck  *imageHealthcheck `json:"Healthcheck,omitempty"`
+}
+
+type imageHealthcheck struct {
+	Test          []string `json:"Test,omitempty"`
+	Interval      int64    `json:"Interval,omitempty"`
+	Timeout       int64    `json:"Timeout,omitempty"`
+	StartPeriod   int64    `json:"StartPeriod,omitempty"`
+	StartInterval int64    `json:"StartInterval,omitempty"`
+	Retries       int      `json:"Retries,omitempty"`
 }
 
 type imageRootFS struct {
@@ -259,6 +277,7 @@ type imageArchive struct {
 	Config   descriptor
 	Layers   []descriptor
 	Tag      string
+	Platform string
 }
 
 func (s *stringList) UnmarshalJSON(body []byte) error {
@@ -318,10 +337,7 @@ func envBool(name string, fallback bool) bool {
 }
 
 func registryURLFromEnv() string {
-	if value := firstEnv("REGISTRY_PROXY_PASS_URL", "REGISTRY_URL", "NGINX_PROXY_PASS_URL"); value != "" {
-		return strings.TrimRight(value, "/")
-	}
-	return "http://registry:5000"
+	return strings.TrimRight(env("REGISTRY_URL", "http://registry:5000"), "/")
 }
 
 func upstreamAuthFromEnv() string {
@@ -392,6 +408,8 @@ func serveIndex(w http.ResponseWriter, sub fs.FS) {
 }
 
 func staticHandler() http.Handler {
+	registerStaticMIMETypes()
+
 	sub, err := fs.Sub(publicFS, "public")
 	if err != nil {
 		log.Fatalf("open embedded public directory: %v", err)
@@ -422,6 +440,12 @@ func staticHandler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+func registerStaticMIMETypes() {
+	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
+	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
+	_ = mime.AddExtensionType(".svg", "image/svg+xml")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -599,6 +623,9 @@ func (a *app) tagDetailHandler() http.Handler {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}
+		if tags, next, err := a.registry.listTags(r.Context(), repo, 2, ""); err == nil {
+			detail.SingleTag = len(tags) == 1 && next == ""
+		}
 		detail.DeleteEnabled = a.deleteAllowed(r.Context())
 		writeJSON(w, http.StatusOK, detail)
 	})
@@ -665,6 +692,43 @@ func (a *app) downloadHandler() http.Handler {
 		}
 		if err := a.registry.writeOCIArchive(r.Context(), w, repo, archive); err != nil {
 			log.Printf("download %s:%s failed: %v", repo, tag, err)
+		}
+	})
+}
+
+func (a *app) dockerDownloadHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+		tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+		digest := strings.TrimSpace(r.URL.Query().Get("digest"))
+		if repo == "" || tag == "" || digest == "" {
+			writeError(w, http.StatusBadRequest, errors.New("missing repo, tag, or image digest"))
+			return
+		}
+		archive, err := a.registry.resolveArchiveForDigest(r.Context(), repo, tag, digest)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		platformName := archive.Platform
+		if platformName == "" {
+			platformName = "image"
+		}
+		filename := sanitizeFileName(repo + "_" + tag + "_" + platformName + ".docker.tar")
+		setSecurityHeaders(w)
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if err := a.registry.writeDockerArchive(r.Context(), w, repo, archive); err != nil {
+			log.Printf("docker download %s:%s (%s) failed: %v", repo, tag, digest, err)
 		}
 	})
 }
@@ -872,20 +936,37 @@ func (c *registryClient) tagMetadata(ctx context.Context, repo, tag string) (tag
 		Size:      root.Descriptor.Size,
 		Platforms: platformsFromManifest(root),
 	}
-	imageManifest := root
 	if isIndexManifest(root) {
-		selected, ok := selectManifest(root.Envelope.Manifests)
-		if !ok {
-			return meta, nil
+		var totalSize int64
+		seenChildren := make(map[string]struct{}, len(root.Envelope.Manifests))
+		for _, item := range root.Envelope.Manifests {
+			if platformToString(item.Platform) == "" || item.Digest == "" {
+				continue
+			}
+			if _, exists := seenChildren[item.Digest]; exists {
+				continue
+			}
+			seenChildren[item.Digest] = struct{}{}
+
+			child, err := c.fetchManifest(ctx, repo, item.Digest)
+			if err != nil || child.Envelope.Config == nil {
+				continue
+			}
+			_, _, childSize := imageContentSizes(child)
+			totalSize += childSize
+			if cfg, _, err := c.fetchImageConfig(ctx, repo, child.Envelope.Config.Digest); err == nil {
+				meta.CreatedAt = latestTime(meta.CreatedAt, normalizeTime(cfg.Created))
+			}
 		}
-		child, err := c.fetchManifest(ctx, repo, selected.Digest)
-		if err != nil {
-			return meta, nil
+		if totalSize > 0 {
+			meta.Size = totalSize
 		}
-		imageManifest = child
+		return meta, nil
 	}
+
+	imageManifest := root
 	if imageManifest.Envelope.Config != nil {
-		meta.Size = imageManifest.Envelope.Config.Size
+		_, _, meta.Size = imageContentSizes(imageManifest)
 		if cfg, _, err := c.fetchImageConfig(ctx, repo, imageManifest.Envelope.Config.Digest); err == nil {
 			meta.CreatedAt = normalizeTime(cfg.Created)
 			if len(meta.Platforms) == 0 {
@@ -896,9 +977,6 @@ func (c *registryClient) tagMetadata(ctx context.Context, repo, tag string) (tag
 		} else if created, err := c.configCreated(ctx, repo, imageManifest.Envelope.Config.Digest); err == nil {
 			meta.CreatedAt = created
 		}
-	}
-	for _, layer := range imageManifest.Envelope.Layers {
-		meta.Size += layer.Size
 	}
 	return meta, nil
 }
@@ -914,11 +992,11 @@ func (c *registryClient) tagDetail(ctx context.Context, repo, tag string) (tagDe
 		Tag:        tag,
 		Digest:     root.Descriptor.Digest,
 		MediaType:  root.Descriptor.MediaType,
-		Size:       root.Descriptor.Size,
 		Platforms:  platformsFromManifest(root),
 	}
 
 	if isIndexManifest(root) {
+		detail.IndexSize = root.Descriptor.Size
 		for _, item := range root.Envelope.Manifests {
 			platformName := platformToString(item.Platform)
 			if platformName == "" {
@@ -934,6 +1012,9 @@ func (c *registryClient) tagDetail(ctx context.Context, repo, tag string) (tagDe
 			}
 			detail.Images = append(detail.Images, image)
 			detail.Size += image.Size
+			detail.ConfigSize += image.ConfigSize
+			detail.LayerSize += image.LayerSize
+			detail.ManifestSize += image.ManifestSize
 			detail.CreatedAt = latestTime(detail.CreatedAt, image.CreatedAt)
 		}
 		if len(detail.Images) == 0 {
@@ -948,6 +1029,9 @@ func (c *registryClient) tagDetail(ctx context.Context, repo, tag string) (tagDe
 	}
 	detail.Images = []imageDetail{image}
 	detail.Size = image.Size
+	detail.ConfigSize = image.ConfigSize
+	detail.LayerSize = image.LayerSize
+	detail.ManifestSize = image.ManifestSize
 	detail.CreatedAt = image.CreatedAt
 	if len(detail.Platforms) == 0 && image.Platform != "" {
 		detail.Platforms = []string{image.Platform}
@@ -964,15 +1048,17 @@ func (c *registryClient) imageDetail(ctx context.Context, repo string, desc desc
 		return imageDetail{}, err
 	}
 
-	layers, instructions := buildImageHistory(manifest.Envelope.Layers, cfg)
+	baseName := firstNonEmpty(
+		manifest.Envelope.Annotations["org.opencontainers.image.base.name"],
+		desc.Ann["org.opencontainers.image.base.name"],
+		cfg.Config.Labels["org.opencontainers.image.base.name"],
+	)
+	layers, instructions := buildImageHistory(manifest.Envelope.Layers, cfg, baseName)
 	platformName := platformToString(desc.Platform)
 	if platformName == "" {
 		platformName = platformFromConfig(cfg)
 	}
-	size := manifest.Envelope.Config.Size
-	for _, layer := range manifest.Envelope.Layers {
-		size += layer.Size
-	}
+	configSize, layerSize, size := imageContentSizes(manifest)
 
 	return imageDetail{
 		Platform:     platformName,
@@ -980,7 +1066,9 @@ func (c *registryClient) imageDetail(ctx context.Context, repo string, desc desc
 		MediaType:    manifest.Descriptor.MediaType,
 		Size:         size,
 		ConfigDigest: manifest.Envelope.Config.Digest,
-		ConfigSize:   manifest.Envelope.Config.Size,
+		ConfigSize:   configSize,
+		LayerSize:    layerSize,
+		ManifestSize: manifest.Descriptor.Size,
 		CreatedAt:    normalizeTime(cfg.Created),
 		Author:       firstNonEmpty(cfg.Author, historyAuthor(cfg.History)),
 		OS:           cfg.OS,
@@ -1000,6 +1088,16 @@ func (c *registryClient) imageDetail(ctx context.Context, repo string, desc desc
 		Layers:       layers,
 		Instructions: instructions,
 	}, nil
+}
+
+func imageContentSizes(manifest manifestData) (configSize, layerSize, totalSize int64) {
+	if manifest.Envelope.Config != nil {
+		configSize = manifest.Envelope.Config.Size
+	}
+	for _, layer := range manifest.Envelope.Layers {
+		layerSize += layer.Size
+	}
+	return configSize, layerSize, configSize + layerSize
 }
 
 func (c *registryClient) fetchImageConfig(ctx context.Context, repo, digest string) (imageConfig, []byte, error) {
@@ -1105,20 +1203,28 @@ func (c *registryClient) probeDelete(ctx context.Context) bool {
 }
 
 func (c *registryClient) resolveArchive(ctx context.Context, repo, tag string) (imageArchive, error) {
+	return c.resolveArchiveForDigest(ctx, repo, tag, "")
+}
+
+func (c *registryClient) resolveArchiveForDigest(ctx context.Context, repo, tag, selectedDigest string) (imageArchive, error) {
 	root, err := c.fetchManifest(ctx, repo, tag)
 	if err != nil {
 		return imageArchive{}, err
 	}
 	manifest := root
+	selectedPlatform := ""
 	if isIndexManifest(root) {
-		selected, ok := selectManifest(root.Envelope.Manifests)
+		selected, ok := selectArchiveManifest(root.Envelope.Manifests, selectedDigest)
 		if !ok {
-			return imageArchive{}, errors.New("manifest index does not contain a usable image manifest")
+			return imageArchive{}, errors.New("selected image manifest is not part of this tag")
 		}
+		selectedPlatform = platformToString(selected.Platform)
 		manifest, err = c.fetchManifest(ctx, repo, selected.Digest)
 		if err != nil {
 			return imageArchive{}, err
 		}
+	} else if selectedDigest != "" && selectedDigest != root.Descriptor.Digest {
+		return imageArchive{}, errors.New("selected image manifest is not part of this tag")
 	}
 	if manifest.Envelope.Config == nil || len(manifest.Envelope.Layers) == 0 {
 		return imageArchive{}, errors.New("manifest does not describe a downloadable image")
@@ -1129,7 +1235,20 @@ func (c *registryClient) resolveArchive(ctx context.Context, repo, tag string) (
 		Config:   *manifest.Envelope.Config,
 		Layers:   manifest.Envelope.Layers,
 		Tag:      tag,
+		Platform: selectedPlatform,
 	}, nil
+}
+
+func selectArchiveManifest(items []descriptor, selectedDigest string) (descriptor, bool) {
+	if selectedDigest == "" {
+		return selectManifest(items)
+	}
+	for _, item := range items {
+		if item.Digest == selectedDigest {
+			return item, true
+		}
+	}
+	return descriptor{}, false
 }
 
 func (c *registryClient) writeOCIArchive(ctx context.Context, w io.Writer, repo string, image imageArchive) error {
@@ -1168,10 +1287,70 @@ func (c *registryClient) writeOCIArchive(ctx context.Context, w io.Writer, repo 
 	return nil
 }
 
+func (c *registryClient) writeDockerArchive(ctx context.Context, w io.Writer, repo string, image imageArchive) error {
+	configName, err := dockerArchiveBlobName(image.Config.Digest, ".json")
+	if err != nil {
+		return err
+	}
+	layerNames := make([]string, 0, len(image.Layers))
+	for _, layer := range image.Layers {
+		name, err := dockerArchiveBlobName(layer.Digest, ".tar")
+		if err != nil {
+			return err
+		}
+		layerNames = append(layerNames, name)
+	}
+
+	manifest := []struct {
+		Config   string   `json:"Config"`
+		RepoTags []string `json:"RepoTags"`
+		Layers   []string `json:"Layers"`
+	}{{
+		Config:   configName,
+		RepoTags: []string{repo + ":" + image.Tag},
+		Layers:   layerNames,
+	}}
+	manifestBody, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	manifestBody = append(manifestBody, '\n')
+
+	tw := tar.NewWriter(w)
+	if err := writeTarBytes(tw, "manifest.json", manifestBody); err != nil {
+		_ = tw.Close()
+		return err
+	}
+	if err := c.writeBlobAt(tw, ctx, repo, image.Config, configName); err != nil {
+		_ = tw.Close()
+		return err
+	}
+	writtenLayers := make(map[string]struct{}, len(image.Layers))
+	for index, layer := range image.Layers {
+		name := layerNames[index]
+		if _, exists := writtenLayers[name]; exists {
+			continue
+		}
+		if err := c.writeBlobAt(tw, ctx, repo, layer, name); err != nil {
+			_ = tw.Close()
+			return err
+		}
+		writtenLayers[name] = struct{}{}
+	}
+	return tw.Close()
+}
+
 func (c *registryClient) writeBlob(tw *tar.Writer, ctx context.Context, repo string, desc descriptor) error {
 	name := blobPath(desc.Digest)
 	if name == "" {
 		return errors.New("invalid blob digest")
+	}
+	return c.writeBlobAt(tw, ctx, repo, desc, name)
+}
+
+func (c *registryClient) writeBlobAt(tw *tar.Writer, ctx context.Context, repo string, desc descriptor, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("invalid archive blob name")
 	}
 	size := desc.Size
 	if size <= 0 {
@@ -1194,6 +1373,17 @@ func (c *registryClient) writeBlob(tw *tar.Writer, ctx context.Context, repo str
 	}
 	_, err = io.Copy(tw, resp.Body)
 	return err
+}
+
+func dockerArchiveBlobName(digest, suffix string) (string, error) {
+	algorithm, value, ok := strings.Cut(strings.TrimSpace(digest), ":")
+	if !ok || algorithm != "sha256" || len(value) != sha256.Size*2 {
+		return "", fmt.Errorf("unsupported Docker archive digest %q", digest)
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return "", fmt.Errorf("invalid Docker archive digest %q: %w", digest, err)
+	}
+	return value + suffix, nil
 }
 
 func (c *registryClient) blobSize(ctx context.Context, repo, digest string) (int64, error) {
@@ -1235,6 +1425,7 @@ func appHandler(cfg serverConfig) http.Handler {
 	mux.Handle("/api/tag", a.tagDetailHandler())
 	mux.Handle("/api/delete", a.deleteHandler())
 	mux.Handle("/api/download", a.downloadHandler())
+	mux.Handle("/api/download/docker", a.dockerDownloadHandler())
 	mux.Handle("/health", healthHandler("health"))
 	mux.Handle("/healthz", healthHandler("healthz"))
 	mux.Handle("/ready", healthHandler("ready"))
@@ -1301,10 +1492,6 @@ func shouldRedirectToSlash(cleanPath, rawPath string) bool {
 }
 
 func serve() error {
-	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
-	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
-	_ = mime.AddExtensionType(".svg", "image/svg+xml")
-
 	cfg := loadConfig()
 	server := &http.Server{
 		Addr:              cfg.Listen,
@@ -1397,8 +1584,7 @@ Usage:
 Environment:
   PORT                     HTTP port, default 8080
   LISTEN_ADDR              Full listen address, default :$PORT
-  REGISTRY_PROXY_PASS_URL  Docker Registry upstream, default http://registry:5000
-  REGISTRY_URL             Alias for REGISTRY_PROXY_PASS_URL
+  REGISTRY_URL             Docker Registry upstream, default http://registry:5000
   DELETE_IMAGES            Enable delete action when the registry supports it, default false
 `, version)
 }
@@ -1649,7 +1835,7 @@ func platformFromConfig(cfg imageConfig) string {
 	return value
 }
 
-func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerDetail, []instructionDetail) {
+func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig, baseNames ...string) ([]layerDetail, []instructionDetail) {
 	layers := make([]layerDetail, len(layerDescriptors))
 	var cumulative int64
 	for i, desc := range layerDescriptors {
@@ -1670,19 +1856,26 @@ func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerD
 
 	instructions := make([]instructionDetail, 0, len(cfg.History)+1)
 	nextLine := 1
-	insertScratch := likelyScratchBase(cfg)
-	scratchInserted := false
+	insertBase := !hasExplicitBaseInstruction(cfg.History) && (len(cfg.History) > 0 || len(layerDescriptors) > 0)
+	baseInstruction := reconstructedBaseInstruction(baseNames...)
+	baseInserted := false
+	lastHealthcheck := lastHistoryInstructionIndex(cfg.History, "HEALTHCHECK")
 	layerIndex := 0
 	var currentSize int64
-	for _, history := range cfg.History {
+	for historyIndex, history := range cfg.History {
 		instruction := cleanDockerInstruction(history.CreatedBy)
 		if instruction == "" {
-			instruction = strings.TrimSpace(history.Comment)
+			instruction = canonicalDockerInstruction(history.Comment)
 		}
-		if insertScratch && !scratchInserted && !isArgInstruction(instruction) {
+		if historyIndex == lastHealthcheck {
+			if healthcheck := dockerHealthcheckInstruction(cfg.Config.Healthcheck); healthcheck != "" {
+				instruction = healthcheck
+			}
+		}
+		if insertBase && !baseInserted && !isArgInstruction(instruction) {
 			instructions = append(instructions, instructionDetail{
 				Line:           nextLine,
-				Instruction:    "FROM scratch",
+				Instruction:    baseInstruction,
 				CreatedAt:      normalizeTime(history.Created),
 				EmptyLayer:     true,
 				Synthetic:      true,
@@ -1690,7 +1883,7 @@ func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerD
 				CumulativeSize: currentSize,
 			})
 			nextLine++
-			scratchInserted = true
+			baseInserted = true
 		}
 		item := instructionDetail{
 			Line:           nextLine,
@@ -1715,37 +1908,43 @@ func buildImageHistory(layerDescriptors []descriptor, cfg imageConfig) ([]layerD
 		instructions = append(instructions, item)
 		nextLine++
 	}
-	if insertScratch && !scratchInserted {
+	if insertBase && !baseInserted {
 		instructions = append(instructions, instructionDetail{
 			Line:           nextLine,
-			Instruction:    "FROM scratch",
+			Instruction:    baseInstruction,
 			CreatedAt:      firstHistoryTime(cfg.History),
 			EmptyLayer:     true,
 			Synthetic:      true,
 			LayerIndex:     -1,
 			CumulativeSize: currentSize,
 		})
+		nextLine++
+	}
+	if lastHealthcheck < 0 {
+		if healthcheck := dockerHealthcheckInstruction(cfg.Config.Healthcheck); healthcheck != "" {
+			instructions = append(instructions, instructionDetail{
+				Line:           nextLine,
+				Instruction:    healthcheck,
+				CreatedAt:      normalizeTime(cfg.Created),
+				EmptyLayer:     true,
+				Synthetic:      true,
+				LayerIndex:     -1,
+				CumulativeSize: currentSize,
+			})
+		}
 	}
 	return layers, instructions
 }
 
-func likelyScratchBase(cfg imageConfig) bool {
-	if len(cfg.History) == 0 || hasExplicitBaseInstruction(cfg.History) || hasEnvKey(cfg.Config.Env, "PATH") {
-		return false
-	}
-	first := ""
-	for _, history := range cfg.History {
-		first = cleanDockerInstruction(history.CreatedBy)
-		if first == "" {
-			first = strings.TrimSpace(history.Comment)
-		}
-		if first == "" || isArgInstruction(first) {
+func reconstructedBaseInstruction(baseNames ...string) string {
+	for _, value := range baseNames {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsAny(value, " \t\r\n") {
 			continue
 		}
-		break
+		return "FROM " + value
 	}
-	upper := strings.ToUpper(strings.TrimSpace(first))
-	return strings.HasPrefix(upper, "ADD ") || strings.HasPrefix(upper, "COPY ")
+	return "FROM scratch"
 }
 
 func isArgInstruction(instruction string) bool {
@@ -1753,24 +1952,27 @@ func isArgInstruction(instruction string) bool {
 	return upper == "ARG" || strings.HasPrefix(upper, "ARG ")
 }
 
-func hasExplicitBaseInstruction(history []imageHistory) bool {
-	for _, item := range history {
-		instruction := strings.ToUpper(strings.TrimSpace(cleanDockerInstruction(item.CreatedBy)))
+func lastHistoryInstructionIndex(history []imageHistory, keyword string) int {
+	keyword = strings.ToUpper(strings.TrimSpace(keyword))
+	for i := len(history) - 1; i >= 0; i-- {
+		instruction := cleanDockerInstruction(history[i].CreatedBy)
 		if instruction == "" {
-			instruction = strings.ToUpper(strings.TrimSpace(item.Comment))
+			instruction = canonicalDockerInstruction(history[i].Comment)
 		}
-		if instruction == "FROM" || strings.HasPrefix(instruction, "FROM ") {
-			return true
+		if dockerInstructionKeyword(instruction) == keyword {
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
-func hasEnvKey(env []string, key string) bool {
-	key = strings.ToUpper(strings.TrimSpace(key))
-	for _, item := range env {
-		name, _, _ := strings.Cut(item, "=")
-		if strings.ToUpper(strings.TrimSpace(name)) == key {
+func hasExplicitBaseInstruction(history []imageHistory) bool {
+	for _, item := range history {
+		instruction := cleanDockerInstruction(item.CreatedBy)
+		if instruction == "" {
+			instruction = canonicalDockerInstruction(item.Comment)
+		}
+		if dockerInstructionKeyword(instruction) == "FROM" {
 			return true
 		}
 	}
@@ -1793,17 +1995,226 @@ func cleanDockerInstruction(raw string) string {
 	}
 	if strings.Contains(value, "#(nop)") {
 		parts := strings.SplitN(value, "#(nop)", 2)
-		return strings.TrimSpace(parts[1])
+		value = strings.TrimSpace(parts[1])
 	}
 	if strings.HasPrefix(value, "/bin/sh -c ") {
-		return "RUN " + strings.TrimSpace(strings.TrimPrefix(value, "/bin/sh -c "))
+		value = "RUN " + strings.TrimSpace(strings.TrimPrefix(value, "/bin/sh -c "))
 	}
 	if strings.HasPrefix(value, "RUN |") {
 		if _, cmd, ok := strings.Cut(value, "/bin/sh -c "); ok {
-			return "RUN " + strings.TrimSpace(cmd)
+			value = "RUN " + strings.TrimSpace(cmd)
 		}
 	}
-	return value
+	return canonicalDockerInstruction(value)
+}
+
+func canonicalDockerInstruction(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	value = strings.TrimSpace(strings.TrimSuffix(value, "# buildkit"))
+
+	keyword, arguments := splitDockerInstruction(value)
+	if keyword == "" || !isDockerInstructionKeyword(keyword) {
+		return value
+	}
+
+	switch keyword {
+	case "RUN":
+		arguments = strings.TrimSpace(strings.TrimPrefix(arguments, "/bin/sh -c "))
+	case "EXPOSE":
+		arguments = canonicalExposeArguments(arguments)
+	case "HEALTHCHECK":
+		arguments = canonicalHealthcheckArguments(arguments)
+	case "VOLUME":
+		arguments = canonicalVolumeArguments(arguments)
+	case "CMD", "ENTRYPOINT", "SHELL":
+		arguments = canonicalJSONArguments(arguments)
+	}
+
+	if arguments == "" {
+		return keyword
+	}
+	return keyword + " " + arguments
+}
+
+func splitDockerInstruction(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", ""
+	}
+	index := strings.IndexAny(value, " \t\r\n")
+	if index < 0 {
+		return strings.ToUpper(value), ""
+	}
+	return strings.ToUpper(value[:index]), strings.TrimSpace(value[index:])
+}
+
+func dockerInstructionKeyword(value string) string {
+	keyword, _ := splitDockerInstruction(value)
+	if !isDockerInstructionKeyword(keyword) {
+		return ""
+	}
+	return keyword
+}
+
+func isDockerInstructionKeyword(keyword string) bool {
+	switch strings.ToUpper(strings.TrimSpace(keyword)) {
+	case "ADD", "ARG", "CMD", "COPY", "ENTRYPOINT", "ENV", "EXPOSE", "FROM",
+		"HEALTHCHECK", "LABEL", "MAINTAINER", "ONBUILD", "RUN", "SHELL",
+		"STOPSIGNAL", "USER", "VOLUME", "WORKDIR":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalExposeArguments(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if !strings.HasPrefix(arguments, "map[") || !strings.HasSuffix(arguments, "]") {
+		return arguments
+	}
+	arguments = strings.TrimSuffix(strings.TrimPrefix(arguments, "map["), "]")
+	var ports []string
+	for _, item := range strings.Fields(arguments) {
+		port := strings.TrimSuffix(item, ":{}")
+		port = strings.TrimSuffix(port, "/tcp")
+		if port != "" {
+			ports = append(ports, port)
+		}
+	}
+	return strings.Join(ports, " ")
+}
+
+func canonicalHealthcheckArguments(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if !strings.HasPrefix(arguments, "&{[") {
+		return arguments
+	}
+	testEnd := strings.Index(arguments, "]")
+	if testEnd < 0 {
+		return arguments
+	}
+
+	var test []string
+	for _, quoted := range regexp.MustCompile(`"(?:\\.|[^"\\])*"`).FindAllString(arguments[2:testEnd], -1) {
+		value, err := strconv.Unquote(quoted)
+		if err != nil {
+			return arguments
+		}
+		test = append(test, value)
+	}
+	if len(test) == 0 {
+		return arguments
+	}
+
+	fields := strings.Fields(strings.TrimSpace(strings.TrimSuffix(arguments[testEnd+1:], "}")))
+	healthcheck := &imageHealthcheck{Test: test}
+	durations := []*int64{
+		&healthcheck.Interval,
+		&healthcheck.Timeout,
+		&healthcheck.StartPeriod,
+		&healthcheck.StartInterval,
+	}
+	for i := 0; i < len(fields) && i < len(durations); i++ {
+		value := strings.Trim(fields[i], `"`)
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return arguments
+		}
+		*durations[i] = int64(duration)
+	}
+	if len(fields) > len(durations) {
+		retryValue := strings.TrimSpace(fields[len(durations)])
+		if decoded, err := strconv.Unquote(retryValue); err == nil {
+			runes := []rune(decoded)
+			if len(runes) == 1 {
+				healthcheck.Retries = int(runes[0])
+			}
+		} else if retries, err := strconv.Atoi(strings.Trim(retryValue, `'"`)); err == nil {
+			healthcheck.Retries = retries
+		}
+	}
+
+	instruction := dockerHealthcheckInstruction(healthcheck)
+	return strings.TrimSpace(strings.TrimPrefix(instruction, "HEALTHCHECK"))
+}
+
+func canonicalVolumeArguments(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return ""
+	}
+	var volumes []string
+	if strings.HasPrefix(arguments, "[") && strings.HasSuffix(arguments, "]") {
+		if err := json.Unmarshal([]byte(arguments), &volumes); err != nil {
+			inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(arguments, "["), "]"))
+			volumes = strings.Fields(inner)
+		}
+	}
+	if len(volumes) == 0 {
+		return arguments
+	}
+	return formatDockerJSONArguments(volumes)
+}
+
+func canonicalJSONArguments(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if !strings.HasPrefix(arguments, "[") || !strings.HasSuffix(arguments, "]") {
+		return arguments
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(arguments), &values); err != nil {
+		return arguments
+	}
+	return formatDockerJSONArguments(values)
+}
+
+func formatDockerJSONArguments(values []string) string {
+	encoded := make([]string, 0, len(values))
+	for _, value := range values {
+		body, _ := json.Marshal(value)
+		encoded = append(encoded, string(body))
+	}
+	return "[" + strings.Join(encoded, ", ") + "]"
+}
+
+func dockerHealthcheckInstruction(healthcheck *imageHealthcheck) string {
+	if healthcheck == nil || len(healthcheck.Test) == 0 {
+		return ""
+	}
+	testType := strings.ToUpper(strings.TrimSpace(healthcheck.Test[0]))
+	if testType == "NONE" {
+		return "HEALTHCHECK NONE"
+	}
+
+	parts := []string{"HEALTHCHECK"}
+	if healthcheck.Interval > 0 {
+		parts = append(parts, "--interval="+time.Duration(healthcheck.Interval).String())
+	}
+	if healthcheck.Timeout > 0 {
+		parts = append(parts, "--timeout="+time.Duration(healthcheck.Timeout).String())
+	}
+	if healthcheck.StartPeriod > 0 {
+		parts = append(parts, "--start-period="+time.Duration(healthcheck.StartPeriod).String())
+	}
+	if healthcheck.StartInterval > 0 {
+		parts = append(parts, "--start-interval="+time.Duration(healthcheck.StartInterval).String())
+	}
+	if healthcheck.Retries > 0 {
+		parts = append(parts, "--retries="+strconv.Itoa(healthcheck.Retries))
+	}
+
+	switch testType {
+	case "CMD":
+		parts = append(parts, "CMD", formatDockerJSONArguments(healthcheck.Test[1:]))
+	case "CMD-SHELL":
+		parts = append(parts, "CMD", strings.Join(healthcheck.Test[1:], " "))
+	default:
+		parts = append(parts, "CMD", formatDockerJSONArguments(healthcheck.Test))
+	}
+	return strings.Join(parts, " ")
 }
 
 func detectBuildArgs(instructions []instructionDetail) []string {

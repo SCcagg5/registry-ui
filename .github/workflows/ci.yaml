@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: src/go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l *.go)"
+
+      - name: Unit tests with race detector
+        run: go test -race ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Validate OCI fixture publisher
+        working-directory: test/seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l *.go)"
+          go test -race ./...
+          go vet ./...
+
+      - name: Frontend syntax
+        run: |
+          set -euo pipefail
+          node --check public/assets/js/api.js
+          node --check public/assets/js/app.js
+          node --check ../test/frontend-contract.mjs
+          node --check ../test/tag-detail-format.mjs
+          node ../test/frontend-contract.mjs
+          node ../test/tag-detail-format.mjs
+
+      - name: Verify configuration and embedded assets
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if find . -type f \( -iname '*.hcl' -o -iname '*.tf' \) | grep -q .; then
+            echo "Registry UI must remain environment-only" >&2
+            exit 1
+          fi
+
+          if grep -R \
+            --include='*.html' \
+            --include='*.js' \
+            --include='*.css' \
+            -E 'https?://|//cdn\.' src/public; then
+            echo "frontend assets must remain self-contained" >&2
+            exit 1
+          fi
+
+          test -f src/public/assets/css/tokens.css
+          test -f src/public/assets/css/icons.css
+          test -f src/public/assets/icons/mdi/database-outline.svg
+          test -f src/public/assets/icons/mdi/tag-multiple-outline.svg
+          test -f docs/ARCHITECTURE.md
+          test -f docs/CONFIGURATION.md
+          test -f docs/DEVELOPMENT.md
+          test -f docs/IMAGE_SUPPORT.md
+          test -f docs/SECURITY.md
+          test -f test/docker-compose.yaml
+          test -f test/browser/Dockerfile
+          test ! -e src/Dockerfile
+
+          docker compose -f test/docker-compose.yaml config --quiet
+
+      - name: Build static binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build \
+              -tags=netgo,osusergo \
+              -trimpath \
+              -ldflags="-s -w -buildid= -X main.version=ci" \
+              -o /tmp/registry-ui .
+
+          file /tmp/registry-ui
+          if readelf -l /tmp/registry-ui | grep -q 'Requesting program interpreter'; then
+            echo "binary unexpectedly requires a dynamic loader" >&2
+            exit 1
+          fi
+          go version -m /tmp/registry-ui | grep -F 'CGO_ENABLED=0'
+
+      - name: Runtime smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=18080 REGISTRY_URL=http://127.0.0.1:5000 /tmp/registry-ui >/tmp/registry-ui.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" = "1"
+
+          curl --fail --silent --show-error http://127.0.0.1:18080/ | grep -F "Registry UI"
+          curl --fail --silent --show-error http://127.0.0.1:18080/config.json | grep -F '"name":"registry-ui"'
+
+          kill "$server_pid"
+          wait "$server_pid" || true
+          trap - EXIT
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start isolated registry stack
+        working-directory: test
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up --build -d
+
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = "1"
+
+      - name: Integration smoke test
+        working-directory: test
+        run: VERIFY_DOCKER_LOAD=1 ./smoke.sh
+
+      - name: Show logs on failure
+        if: failure()
+        working-directory: test
+        run: docker compose logs --no-color
+
+      - name: Stop isolated registry stack
+        if: always()
+        working-directory: test
+        run: docker compose down -v

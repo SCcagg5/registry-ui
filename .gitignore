@@ -1,6 +1,8 @@
 .DS_Store
 /dist/
 /build/
+src/registry-ui
+test/.env
 *.tgz
 *.zip
 checksums.txt

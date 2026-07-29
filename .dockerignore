@@ -1,0 +1,14 @@
+# Local build and release outputs.
+src/registry-ui
+dist/
+build/
+*.tgz
+*.zip
+checksums.txt
+
+# Local integration overrides.
+test/.env
+
+# Repository metadata and workstation files.
+.git/
+.DS_Store

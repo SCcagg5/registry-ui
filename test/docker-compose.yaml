@@ -1,0 +1,45 @@
+services:
+  registry-ui:
+    build:
+      context: ..
+      dockerfile: test/browser/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    read_only: true
+    environment:
+      REGISTRY_URL: http://registry:5000
+      DELETE_IMAGES: "true"
+    ports:
+      - "${REGISTRY_UI_PORT:-8080}:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/registry-ui", "health", "--quiet"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  registry:
+    image: registry:3.0.0
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      OTEL_TRACES_EXPORTER: none
+    volumes:
+      - registry-data:/var/lib/registry
+
+  seed:
+    build:
+      context: ..
+      dockerfile: test/seed/Dockerfile
+    environment:
+      REGISTRY_URL: http://registry:5000
+    depends_on:
+      registry:
+        condition: service_started
+    restart: "no"
+
+volumes:
+  registry-data:

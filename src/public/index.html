@@ -3,44 +3,101 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
   <title>Registry UI</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=3" />
+
+  <link rel="stylesheet" href="assets/css/icons.css" />
+  <link rel="stylesheet" href="assets/css/tokens.css" />
+  <link rel="stylesheet" href="assets/css/base.css" />
   <link rel="stylesheet" href="assets/css/style.css" />
   <link rel="stylesheet" href="assets/css/ui.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
+      <div class="container build-line">
+        <span id="versionBadge" class="version" title="Registry UI release">
+          <i class="mdi mdi-source-commit" aria-hidden="true"></i>
+          <span>dev</span>
+        </span>
+      </div>
       <div class="container head">
-        <h1>Registry UI</h1>
-        <span id="versionBadge" class="version">dev</span>
+        <a class="brand" href="#/" aria-label="Registry UI home">
+          <span class="brand-icon" aria-hidden="true">
+            <i class="mdi mdi-cube-outline"></i>
+          </span>
+          <span class="brand-copy">
+            <h1>Registry UI</h1>
+          </span>
+        </a>
+        <label id="searchField" class="head-search">
+          <span class="sr-only">Search repositories</span>
+          <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Image or namespace" />
+        </label>
       </div>
     </header>
 
     <main class="container main">
-      <section class="panel toolbar" aria-label="Main actions">
+      <section id="viewHeader" class="view-header hidden" aria-label="Current view">
         <div class="toolbar-title">
-          <button id="backBtn" class="btn ghost back-btn is-placeholder" type="button" title="Back" aria-label="Back" disabled>←</button>
-          <h2 id="viewTitle">Repositories</h2>
+          <button id="backBtn" class="btn ghost back-btn is-placeholder" type="button" title="Back" aria-label="Back" disabled>
+            <i class="mdi mdi-arrow-left" aria-hidden="true"></i>
+          </button>
+          <div class="toolbar-heading">
+            <h2 id="viewTitle">Repositories</h2>
+            <div id="viewMeta" class="toolbar-meta hidden"></div>
+          </div>
         </div>
-        <div class="toolbar-actions">
-          <label class="field">
-            <span>Search</span>
-            <input id="searchInput" type="search" autocomplete="off" placeholder="Image or namespace" />
-          </label>
+        <div class="view-actions">
+          <div id="tagToolbarActions" class="tag-toolbar-actions hidden"></div>
         </div>
       </section>
 
-      <section id="notice" class="notice hidden"></section>
-      <section id="content" class="panel content" aria-live="polite"></section>
+      <section id="notice" class="notice hidden" role="status"></section>
+      <section id="content" class="panel content" aria-live="polite" aria-busy="false"></section>
     </main>
 
-    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <div id="toastHost" aria-live="polite" aria-atomic="true">
+      <div id="toast" class="bb-toast hidden" role="status">
+        <i id="toastIcon" class="mdi mdi-check-circle-outline bb-toast-icon" aria-hidden="true"></i>
+        <div class="bb-toast-content">
+          <div id="toastMessage" class="bb-toast-message"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="confirmOverlay" class="bb-overlay hidden" role="presentation">
+      <section class="bb-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+        <header class="bb-modal-header">
+          <span id="confirmTitle" class="bb-modal-title">Delete image tag</span>
+          <button id="confirmClose" class="bb-modal-x" type="button" aria-label="Close">
+            <i class="mdi mdi-close" aria-hidden="true"></i>
+          </button>
+        </header>
+        <div class="bb-modal-body">
+          <div class="confirm-copy">
+            <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+            <div>
+              <strong id="confirmReference"></strong>
+              <p id="confirmMessage">This removes the manifest reference from the registry. This action cannot be undone.</p>
+            </div>
+          </div>
+        </div>
+        <footer class="bb-modal-actions">
+          <button id="confirmCancel" class="bb-btn" type="button">Cancel</button>
+          <button id="confirmDelete" class="bb-btn bb-btn-danger" type="button">Delete tag</button>
+        </footer>
+      </section>
+    </div>
   </div>
 
   <noscript>
     <main class="container main">
       <section class="panel content empty">
-        JavaScript is required to browse this registry.
+        <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+        <h2>JavaScript required</h2>
+        <p>Enable JavaScript to browse this registry.</p>
       </section>
     </main>
   </noscript>

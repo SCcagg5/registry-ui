@@ -2,6 +2,7 @@
 .github
 build
 dist
+*_test.go
 *.tgz
 *.zip
 .DS_Store
